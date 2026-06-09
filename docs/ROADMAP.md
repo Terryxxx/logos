@@ -170,59 +170,170 @@ needs **fast feedback about what they're getting into**.
 - [ ] Per-project default agent ("issues in 'logos' default to Copilot
       Helper").
 
+#### Research notes -- where Multica diverges
+
+Multica does **not** run `git status` against a local repo because its
+"workspace" is a runtime sandbox (VHD / container), not the user's
+checkout. Instead it surfaces diff stats from the **PR webhook**:
+`github_pull_request.additions / deletions / changed_files` (migration
+`092_pr_stats.up.sql`), and the card hides the row when
+`total === 0` to avoid showing a misleading "+0 −0" before the
+webhook has caught up.
+
+Our V0.6 stays **local-only** (it works without any GitHub account
+configured). We'll keep the schema shape -- a `task_diff_stat` row
+with `additions / deletions / changed_files` -- so that V1.x can
+later fill the same columns from a GitHub webhook when remote PR
+integration lands, and the UI never needs to learn the difference.
+
+`AGENTS.md` / `CLAUDE.md` *detection* is **our own** addition --
+Multica has no equivalent UI; the CLIs auto-load them silently
+and that's it.
+
 ### V0.7 -- Comments + multi-turn
 
 **Goal:** stop forcing "Run again" + prior session as the only
-followup mechanism. Issues become threads.
+followup mechanism. Issues become threads. **Also the prerequisite
+for V0.8** -- Multica's multi-agent design uses comments as the
+inter-agent message bus, so we ship comments first.
 
 #### Must
 
 - [ ] **`comment` table.** Author = member (you) or agent. Parent =
-      issue. Ordered by created_at.
+      issue. Ordered by created_at. Schema ported from Multica's
+      migration `001_init` + `017_comment_parent_id` + `069_comment_resolved_at`:
+      `id, issue_id, parent_comment_id NULL, author_type ('member'|'agent'|'system'),
+      author_id, body, created_at, updated_at, resolved_at NULL`.
+      `parent_comment_id` enables threading; `resolved_at` lets the
+      UI hide closed discussions.
 - [ ] **Comment-triggered task.** Posting a member comment on an issue
       that already has an assignee enqueues a new task; prompt = the
       comment content (not the issue description re-sent); resume
-      chain unchanged.
+      chain unchanged. Implemented as a join row, port of
+      `028_task_trigger_comment.up.sql`:
+      `agent_task_queue.trigger_comment_id NULL` -- one comment can
+      trigger at most one task; UI links each task card back to the
+      comment that started it.
 - [ ] **UI:** issue detail gets a chronological thread of comments
       interleaved with task conversation collapsibles, plus a "Reply"
       composer at the bottom.
 - [ ] **WS event `comment:created`** and frontend invalidates the
       thread query.
+- [ ] **System-author comments** for agent-generated handoff messages
+      (port of `107_comment_system_author.up.sql`). When V0.8's
+      leader posts "I delegated this to @coder" or a worker posts
+      "done -- here's what I changed", they're system-authored
+      comments, not free-form text -- the UI can render them
+      distinctly.
 
 #### Should
 
 - [ ] Edit / delete own comments.
 - [ ] Agent comments distinguished visually from member comments.
+- [ ] Markdown rendering on comments (reuses the V0.2
+      react-markdown setup).
 
 #### Won't
 
 - @mention triggers across agents -- V0.8 (depends on multi-agent).
+- Comment reactions (Multica's `026_comment_reactions`) -- not useful
+  in single-user mode; defer to V2.
+- Comment full-text search (Multica's `033_comment_search_index`) --
+  SQLite FTS5 is trivial to add later; not needed before V1.0.
 
-### V0.8 -- Sequential Pipeline (first multi-agent mode)
+### V0.8 -- Squad (Leader + Worker, first multi-agent mode)
 
-**Goal:** "planner → coder → reviewer" as a single configured pipeline
-per issue. The dispatcher is the user (no AI routing yet).
+**Goal:** ship Multica's proven multi-agent shape: a **squad** is a
+named team with one **leader** agent and N **worker** agents, all
+communicating via the **comment thread** (built in V0.7). The user
+assigns an issue to a squad; the leader receives it, decides which
+workers to invoke, and posts `@worker` comments to delegate. Each
+delegation is a new task with the original issue as parent.
+
+#### Why this shape (not "sequential pipeline" as originally planned)
+
+Multica explored two multi-agent paths and **only one survived**:
+
+1. **CLI-native subagents** (Codex's `features.multi_agent`,
+   `spawn_agent` / `send_input` / `wait`). Multica explicitly
+   **disables** this in
+   `server/internal/daemon/execenv/codex_multi_agent.go` -- the
+   parent thread emits `turn/completed` while spawned children may
+   still be running, causing premature-completion failures where
+   child output is dropped. Requires `MULTICA_CODEX_MULTI_AGENT=1`
+   to opt back in (and document "lifecycle risk accepted").
+
+2. **Squad (external coordination)** -- the leader runs as a normal
+   task, delegations are normal tasks too, lifecycle is the same as
+   any other task. This is what Multica actually ships in
+   production (`migrations/084_squad`, `088_squad_instructions`,
+   `090_task_is_leader`, `096_autopilot_squad_assignee`).
+
+Logos picks path 2 from day one. Sequential pipelines
+("planner → coder → reviewer") become a **squad template** -- a 3-member
+squad whose leader system-prompt says "call planner first, then coder,
+then reviewer" -- rather than its own execution mode.
 
 #### Must
 
-- [ ] **Pipeline as data**: per-issue list of `agent_id` in order.
-      Stored on the issue (small JSON column or a separate
-      `issue_pipeline_step` table).
-- [ ] **Auto-advance**: when step N completes, enqueue step N+1
-      automatically with the prior task's session id passed through
-      where the same agent appears later (rare).
-- [ ] **UI**: pipeline visualisation on issue detail
-      (`Claude → Copilot → Claude`), per-step status, ability to
-      skip/restart a step.
-- [ ] **Pause on failure**: a failed step pauses the pipeline; user
-      retries, or edits the prompt and resumes.
+- [ ] **`squad` + `squad_member` tables.** Schema from
+      `084_squad.up.sql`:
+      `squad{id, name, description, leader_agent_id NOT NULL,
+      instructions TEXT (from 088), created_at, updated_at,
+      archived_at NULL (from 085)}` and
+      `squad_member{squad_id, agent_id, role TEXT}`. We skip the
+      `member_type IN ('agent','member')` polymorphism -- in single
+      user mode every member is an agent (humans don't get tasks).
+- [ ] **Issue assignee_type extended.** `issue.assignee_type` enum
+      gains `'squad'`; `issue.squad_id` nullable FK alongside the
+      existing `issue.agent_id`. Exactly one of the two is set per
+      issue.
+- [ ] **`task.is_leader_task BOOLEAN`** (from `090_task_is_leader`).
+      Distinguishes a leader-role task from a worker-role task on
+      the same agent -- needed because the same agent can appear in
+      multiple squads with different roles.
+- [ ] **`task.parent_task_id NULL`** so the UI can render the squad
+      task tree (leader at the top, worker tasks as children of the
+      delegating leader task).
+- [ ] **Leader-mode prompt template.** When the runner dispatches a
+      leader task, it appends a system-prompt section listing the
+      squad's workers + the convention "delegate by posting a
+      comment that starts with `@<worker-name>`". Per-squad custom
+      addendum from `squad.instructions` (port of
+      `088_squad_instructions`).
+- [ ] **Mention parser triggers worker tasks.** Reuses V0.7's
+      comment infrastructure -- when a leader's task generates a
+      comment that contains `@<worker-name>`, the comment-trigger
+      pipeline enqueues a worker task with
+      `is_leader_task=false`, `parent_task_id=<leader_task_id>`,
+      `trigger_comment_id=<comment_id>`.
+- [ ] **Self-trigger guard.** A leader cannot delegate to itself;
+      a worker's own comments cannot wake its own next round. The
+      guard consults the comment author's most recent task on the
+      issue and skips when that task was already a leader task --
+      this is Multica's actual rule (see `090_task_is_leader` rationale).
+- [ ] **UI: squad picker** in IssueCreate (next to the agent picker;
+      mutually exclusive). Squads CRUD page (similar shape to
+      Projects). IssueDetail shows the task tree -- leader task at
+      the root, indented worker tasks underneath.
 
 #### Should
 
-- [ ] Pipeline templates: "Design + implement + review" as a one-click
-      preset.
-- [ ] Step-specific prompt addendum (each step can have its own
-      instruction).
+- [ ] **Built-in squad templates** -- one-click presets that create a
+      squad of existing agents with a curated leader prompt:
+      - `Plan + Code + Review` (the originally planned "sequential
+        pipeline" use case, now expressed as a 3-member squad)
+      - `Two-mind` (two coders run independently, leader picks the
+        better diff)
+- [ ] **Visual delegation arrows** in the task tree (`leader → worker`
+      edges labelled with the trigger comment's first 40 chars).
+
+#### Won't (deferred to V1.5)
+
+- AI-routed leader -- Multica leaves leader decisions to the model;
+  V0.8 keeps that simple. Cap on cascade depth, "no-action" tracking
+  (Multica's `089_squad_no_action_activity_index`), and per-squad
+  archival/avatar polish all live in V1.5.
 
 ### V0.9 -- Parallel Fan-out + token cost
 
@@ -283,28 +394,32 @@ reverse-engineering work when we get to building them.
 
 ---
 
-### V1.1 -- Conversational `@mention` across agents
+### V1.1 -- Open `@mention` across any agent (not just squad workers)
 
-With Comments (V0.7) and Pipelines (V0.8) in hand, the natural next
-step is letting agents `@` each other in comments. Each `@mention`
-enqueues a task for the mentioned agent, resuming its own session if
-it has one on this issue.
+V0.8 already implements `@mention` triggering, but only within a
+squad's predefined worker roster. V1.1 generalises it: any comment
+can `@<agent-name>` any agent in the workspace, regardless of squad
+membership. Useful for ad-hoc handoffs ("hey @copilot-helper, take
+a look at this" on an issue that wasn't originally assigned to a
+squad).
 
 #### Must
 
-- [ ] **Mention parser** -- extract `@<agent-name>` tokens from
-      comment content. Disambiguate when multiple agents share a name
-      by also accepting `@<agent-name>#<short-id>`.
+- [ ] **Open mention parser** -- extract `@<agent-name>` tokens from
+      any comment, not just those authored by a squad leader.
+      Disambiguate when multiple agents share a name by also
+      accepting `@<agent-name>#<short-id>`.
 - [ ] **`EnqueueTaskForMention(issueID, agentID, triggerCommentID)`**
       service path (Multica's name for the same thing) -- the prompt
       handed to the agent is the comment content, not the issue
       description.
-- [ ] **Self-trigger guard** -- an agent's own comments must not
-      re-trigger it. Already a one-line check
-      (`if commentAuthor.agent_id == mentionedAgent.id: skip`), but
-      worth a dedicated test.
-- [ ] **`trigger_comment_id` on `agent_task_queue`** so the UI can
-      link from a task card back to the comment that started it.
+- [ ] **Self-trigger guard generalised** -- already exists for the
+      squad case in V0.8; widen to cover the open-mention case too.
+- [ ] **First-mention auto-subscribe.** Mentioning an agent on an
+      issue that has no assignee adds them as an additional
+      assignee (port of Multica's
+      `015_issue_subscriber` + `016_backfill_subscribers`) -- so
+      subsequent unaddressed comments on the issue also reach them.
 
 #### Should
 
@@ -404,40 +519,40 @@ digest", "every push to main, run a smoke agent".
 - [ ] **Rate-limit webhook endpoint** (IP + token) so a misconfigured
       caller can't DoS the agent runtime.
 
-### V1.5 -- Squad / Leader-Worker
+### V1.5 -- Advanced squad (polish on top of V0.8)
 
-The full Multica pattern: a leader agent receives an issue, decides
-which workers to delegate to. AI routing, not user-configured
-pipelines. Harder to debug than V0.8 pipelines -- only worth shipping
-once V0.8 has proven the multi-agent ergonomic baseline.
-
-#### Must
-
-- [ ] **`squad` + `squad_member` tables.** A squad has a name + one
-      leader + N workers (each `squad_member` is an existing agent
-      tagged with role `leader` or `worker`).
-- [ ] **Issue assignee can be a squad.** Adds `issue.squad_id`
-      column; service.EnqueueTaskForIssue routes to the leader with
-      `is_leader_task=true` (`agent_task_queue` already has this
-      column from Multica's migration 090).
-- [ ] **Leader-mode prompt template.** The runner injects a system
-      prompt section explaining "you are the leader of squad X; the
-      workers available are <list>; you may delegate by using the
-      @mention tool we provide".
-- [ ] **Worker enqueue from leader output.** When the leader's
-      streamed tool_use matches the @mention tool, runner calls
-      `EnqueueTaskForSquadWorker(squadID, workerID, parentTaskID)`.
-- [ ] **`task.parent_task_id`** so the UI can display the squad's
-      task tree.
+The V0.8 squad ships the core leader/worker loop, but Multica's
+production squad has years of edge-case fixes on top of it. Pick up
+the remaining items once V0.8 has real usage and we know which
+matter.
 
 #### Should
 
-- [ ] Cap on cascade depth (a misbehaving leader can't infinitely
-      delegate).
-- [ ] Per-squad "no-action" tracking (Multica's
-      `squad_no_action_activity_index`): when a leader looks at an
+- [ ] **Cap on cascade depth.** A misbehaving leader could @mention
+      itself transitively (`leader` → `worker A` → `leader` again).
+      Hard cap (default: 5 levels) with a clear failure message in
+      the task tree.
+- [ ] **Per-squad "no-action" tracking.** Port of
+      `089_squad_no_action_activity_index`: when a leader looks at an
       issue and decides nothing needs to happen, the decision is
-      logged so the UI doesn't show a phantom "in progress" forever.
+      logged so the UI doesn't show a phantom "in progress" forever
+      and the next trigger doesn't re-run the same analysis from
+      cold.
+- [ ] **Squad avatar + non-unique names** (`086_squad_avatar`,
+      `087_squad_name_not_unique`). Cosmetic + the ability to have
+      `Backend Squad` in two projects.
+- [ ] **Autopilot can assign to a squad** (`096_autopilot_squad_assignee`) --
+      once V1.4 ships, scheduled tasks should route through the
+      squad too.
+
+#### Won't (research items, not ready to commit)
+
+- AI-routed leader that picks workers based on issue content (rather
+  than the model deciding through prompt). Multica leaves this to
+  the model and it works well enough; we don't need a separate
+  routing layer.
+- Squad-of-squads. Nested teams introduce a second cascade-depth
+  problem; current evidence doesn't justify the cost.
 
 ### V1.6 -- Sub-issue hierarchy
 
