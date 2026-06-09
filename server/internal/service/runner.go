@@ -122,8 +122,10 @@ func (r *Runner) executeTask(parent context.Context, a store.Agent, task store.T
 		return
 	}
 
-	// Per-issue shared workspace. Created BEFORE Start so a permission /
-	// disk-full error fails the task cleanly with the right reason.
+	// Per-issue shared workspace -- OR project's real local path if the
+	// issue is bound to a Project (V0.5+). Created BEFORE Start so a
+	// permission / disk-full error fails the task cleanly with the
+	// right reason.
 	//
 	// Why share by issue (not task): when "Run again" resumes the prior
 	// agent session, the agent remembers in conversation what files it
@@ -132,18 +134,31 @@ func (r *Runner) executeTask(parent context.Context, a store.Agent, task store.T
 	// not match the file system ("the directory is empty"). Sharing by
 	// issue keeps both views in sync.
 	//
-	// Fallback to a task-scoped dir for future task kinds without an
-	// issue (chat sessions, quick-create -- not used in V0.4 since the
-	// schema requires issue_id NOT NULL on every task).
+	// Project mode: when issue.project_id is set, cwd is the project's
+	// real on-disk path (typically a git repo checkout the user wants
+	// the agent to modify in place). We do NOT MkdirAll in that case --
+	// the path was validated as an existing directory at project create
+	// time.
 	var workDir string
-	if task.IssueID != "" {
+	var isProjectMode bool
+	if task.IssueID != "" && issue.ProjectID.Valid {
+		project, perr := r.st.GetProject(issue.ProjectID.String)
+		if perr != nil {
+			_, _ = r.tasks.Fail(parent, task.ID, "load project: "+perr.Error(), "project_missing", "", "")
+			return
+		}
+		workDir = project.LocalPath
+		isProjectMode = true
+	} else if task.IssueID != "" {
 		workDir = filepath.Join(r.workspacesRoot, "issue-"+task.IssueID)
 	} else {
 		workDir = filepath.Join(r.workspacesRoot, "task-"+task.ID)
 	}
-	if err := os.MkdirAll(workDir, 0o755); err != nil {
-		_, _ = r.tasks.Fail(parent, task.ID, "mkdir workdir: "+err.Error(), "workdir_error", "", "")
-		return
+	if !isProjectMode {
+		if err := os.MkdirAll(workDir, 0o755); err != nil {
+			_, _ = r.tasks.Fail(parent, task.ID, "mkdir workdir: "+err.Error(), "workdir_error", "", "")
+			return
+		}
 	}
 
 	// Resume the most recent session this agent ran on this issue. Claude
@@ -213,11 +228,10 @@ func (r *Runner) executeTask(parent context.Context, a store.Agent, task store.T
 	// this task's work_dir so the UI doesn't surface a misleading
 	// "Open workspace" button into nothing.
 	//
-	// Other tasks on the same issue keep their own work_dir cells; if
-	// any of them produced files the directory wasn't empty and we
-	// would have left it alone here. The next task on this issue
-	// re-runs MkdirAll so the recreation is automatic.
-	if isEmptyDir(workDir) {
+	// Project mode skips this -- a project's directory belongs to the
+	// user, not to us. Even if no files changed this run, the dir is
+	// still a meaningful place to open.
+	if !isProjectMode && isEmptyDir(workDir) {
 		if err := os.Remove(workDir); err == nil {
 			if cerr := r.st.ClearTaskWorkDir(task.ID); cerr != nil {
 				taskLog.Warn("clear work_dir after empty workspace cleanup", "error", cerr)

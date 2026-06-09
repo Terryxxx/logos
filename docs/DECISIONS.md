@@ -546,6 +546,111 @@ compiled). Acceptable.
 
 ---
 
+## ADR-019 · Projects: bind issues to real on-disk paths
+
+**Context.** Through V0.4 every task ran in an isolated sandbox under
+`<data-dir>/workspaces/`. That works for one-shot Q&A and for code
+demos in clean directories, but it failed the most basic actual user
+need: "I work in `D:\code\my-real-repo`. I want the agent to do real
+work inside it, the same way I do today by `cd` + `copilot`."
+
+**Decision.** Add a `project` table (id / name / local_path /
+description) and an optional `project_id` FK on `issue`. When an issue
+has a project, the runner sets the agent's cwd to `project.local_path`
+instead of the sandbox path. When it doesn't, V0.4 behaviour is
+preserved.
+
+**Why this shape (vs Multica's `project_resource` system).**
+
+- Single-user desktop = no need for Multica's per-resource type
+  hierarchy (local_directory / github_repo / docs). One path covers
+  the dominant case.
+- Single-user desktop = no need for Multica's `LocalPathLocker` +
+  `waiting_local_directory` state machine. `max_concurrent_tasks=1`
+  + one human operator avoids the race.
+- We trust the user with the path. No allowlist of "approved"
+  subpaths; if you typed `D:\code\foo` into the dialog, you meant it.
+  Sandbox safety becomes user responsibility (the dialog explicitly
+  warns about read/write access and recommends `git commit` first).
+
+**Backwards compatibility.**
+
+- `issue.project_id` is nullable. All V0.1-V0.4 issues continue to
+  use the sandbox.
+- Path validation happens at project create time (must exist + must
+  be a directory + must be absolute). Missing paths discovered later
+  fail the task cleanly with `project_missing` reason.
+- Empty-workspace cleanup is skipped in project mode (the dir is the
+  user's, not ours).
+- `Tauri::open_path` had to drop its "must live under data dir"
+  guardrail since project paths live wherever the user wants. The
+  threat model is still bounded by localhost-only binding.
+
+**Revisit triggers.**
+
+- Multi-user (team mode): need real LocalPathLocker + waiting state
+  to handle two members "Run again" the same issue concurrently.
+- Git-aware workflows: V0.6+ may add a `project.git_branch` field
+  and auto-create per-issue worktrees so concurrent issues don't
+  trample each other's changes.
+- Multiple resources per project: V0.7+ may need to model "this
+  project = (frontend repo, backend repo, docs site)" the way
+  Multica's project_resource table does.
+
+---
+
+## ADR-020 · Don't intercept agent CLI instruction files
+
+**Context.** Both Copilot CLI and Claude Code default-load convention
+files from cwd:
+
+- Copilot: `AGENTS.md` in cwd, plus nested `AGENTS.md` in
+  subdirectories, plus `~/.copilot/AGENTS.md` for global.
+- Claude: `CLAUDE.md` in cwd, plus `.claude/CLAUDE.md`, plus
+  `~/.claude/CLAUDE.md`.
+
+ADR-014 already noted that Copilot ignores `--append-system-prompt` and
+relies exclusively on `AGENTS.md`. Once V0.5 projects pointed cwd at
+the user's real repo, the question became: does the agent honour the
+repo's existing `AGENTS.md` automatically? Empirically yes -- because
+the CLI itself does, and we don't pass any flag to disable it.
+
+**Decision.** Don't intercept or transform `AGENTS.md` / `CLAUDE.md`.
+Don't write our own merged version into cwd. Just surface the
+behaviour in the UI so users know it's happening and can update those
+files freely.
+
+**Why.**
+
+- The existing convention is well-known. Users who use these CLIs
+  already understand `AGENTS.md`; surprising them with a Logos-managed
+  override would create two sources of truth.
+- "Just `cd` and the CLI does the right thing" is the implicit
+  contract Logos honours by setting cwd to the project path. Loading
+  rules are part of "right thing".
+- The Agent entity's `instructions` field is still useful for Claude
+  (we pass it via `--append-system-prompt`). Document it as
+  "Claude-only" in the UI when V0.6 adds per-provider field hints.
+
+**Trade-offs accepted.**
+
+- Copilot ignores the `agent.instructions` field today. The Agents
+  UI lets users type something that has no effect when the agent
+  runs as Copilot. Future polish: detect provider from runtime and
+  either disable the field or warn.
+- Inconsistency between providers: Claude reads BOTH `CLAUDE.md`
+  (project) and `--append-system-prompt` (Logos agent.instructions).
+  Copilot reads only `AGENTS.md`. The user has to know to write
+  whichever file matches their provider.
+
+**Revisit trigger.** When we add a 3rd / 4th provider (Codex, OpenCode,
+Gemini) and each has its own convention. At some point we may want a
+single `LOGOS.md` that we copy/symlink as the appropriate name per
+provider — but that's still a "convenience layer over CLI defaults",
+not a replacement for them.
+
+---
+
 ## How to add a new ADR
 
 1. Pick the next number (`ADR-XXX`).

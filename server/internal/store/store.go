@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/logos-app/logos/server/migrations"
 	_ "modernc.org/sqlite"
@@ -38,14 +39,29 @@ func (s *Store) Close() error { return s.db.Close() }
 func (s *Store) DB() *sql.DB  { return s.db }
 
 func (s *Store) Migrate() error {
-	sqlText, err := migrations.InitSQL()
+	migs, err := migrations.AllInOrder()
 	if err != nil {
-		return fmt.Errorf("read 001_init.sql: %w", err)
+		return fmt.Errorf("list migrations: %w", err)
 	}
-	if _, err := s.db.Exec(sqlText); err != nil {
-		return fmt.Errorf("apply 001_init.sql: %w", err)
+	for _, m := range migs {
+		// SQLite throws "duplicate column name" on re-running ADD COLUMN.
+		// Each migration file is otherwise idempotent (CREATE TABLE IF
+		// NOT EXISTS, CREATE INDEX IF NOT EXISTS, INSERT OR IGNORE).
+		// We swallow the specific duplicate-column error so a fresh run
+		// of an old file doesn't fail; everything else is fatal.
+		if _, err := s.db.Exec(m.SQL); err != nil {
+			if isBenignMigrationError(err) {
+				continue
+			}
+			return fmt.Errorf("apply %s: %w", m.Name, err)
+		}
 	}
 	return nil
+}
+
+func isBenignMigrationError(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "duplicate column name")
 }
 
 func (s *Store) GetSetting(key string) (string, error) {

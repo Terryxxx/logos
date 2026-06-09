@@ -1,15 +1,17 @@
 import { useState } from "react";
-import { Inbox, Bot, Cpu, type LucideIcon } from "lucide-react";
+import { Inbox, Bot, Cpu, FolderGit2, type LucideIcon } from "lucide-react";
 
 import { cn } from "./lib/utils";
 import { IssuesPage } from "./pages/IssuesPage";
 import { AgentsPage } from "./pages/AgentsPage";
 import { RuntimesPage } from "./pages/RuntimesPage";
+import { ProjectsPage } from "./pages/ProjectsPage";
 
-type PageKey = "issues" | "agents" | "runtimes";
+type PageKey = "issues" | "projects" | "agents" | "runtimes";
 
 const NAV: { key: PageKey; label: string; icon: LucideIcon }[] = [
   { key: "issues", label: "Issues", icon: Inbox },
+  { key: "projects", label: "Projects", icon: FolderGit2 },
   { key: "agents", label: "Agents", icon: Bot },
   { key: "runtimes", label: "Runtimes", icon: Cpu },
 ];
@@ -48,6 +50,7 @@ export default function App() {
 
       <main className="overflow-hidden">
         {page === "issues" && <IssuesPage />}
+        {page === "projects" && <ProjectsPage />}
         {page === "agents" && <AgentsPage />}
         {page === "runtimes" && <RuntimesPage />}
       </main>

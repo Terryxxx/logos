@@ -16,6 +16,11 @@ const (
 	// Runtime
 	EventRuntimeStatus = "runtime:status"
 
+	// Project events
+	EventProjectCreated = "project:created"
+	EventProjectUpdated = "project:updated"
+	EventProjectDeleted = "project:deleted"
+
 	// Task lifecycle (transitions on agent_task_queue.status)
 	EventTaskQueued    = "task:queued"
 	EventTaskDispatch  = "task:dispatch"

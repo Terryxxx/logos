@@ -93,6 +93,16 @@ func NewRouter(h *Handler, hub *realtime.Hub, token string) http.Handler {
 			})
 		})
 
+		r.Route("/api/projects", func(r chi.Router) {
+			r.Get("/", h.ListProjects)
+			r.Post("/", h.CreateProject)
+			r.Route("/{id}", func(r chi.Router) {
+				r.Get("/", h.GetProject)
+				r.Patch("/", h.UpdateProject)
+				r.Delete("/", h.DeleteProject)
+			})
+		})
+
 		r.Route("/api/tasks/{id}", func(r chi.Router) {
 			r.Get("/", h.GetTask)
 			r.Get("/messages", h.ListTaskMessages)

@@ -53,6 +53,27 @@ works end-to-end on the author's machine.
       reading the empty `assistant.message.toolRequests` array). Tool
       calls expand to show `{ toolName, arguments }` JSON; tool results
       show the actual stdout.
+- [x] **(V0.5) Projects.** A `project` table maps a name + description
+      to a real on-disk path (typically a git repo). Issues optionally
+      bind to a project via `issue.project_id`. In project mode, the
+      agent's cwd IS the project path — the agent reads and modifies
+      your actual repository files (your `AGENTS.md` / `CLAUDE.md` get
+      loaded automatically by the CLIs, no intercept needed; see
+      ADR-020). Issues without a project keep working in the V0.4
+      sandbox path. Empty-workspace cleanup is skipped in project mode
+      because the directory belongs to the user. UI: new Projects tab
+      (CRUD with path validation), Issue create + detail forms now
+      include a Project picker, warnings about read/write semantics and
+      automatic `AGENTS.md` / `CLAUDE.md` loading shown in both places.
+- [x] **(V0.5) Migration runner upgraded.** Server now applies every
+      `migrations/*.sql` in numeric order at startup (was hard-coded to
+      `001_init.sql`). Tolerates the "duplicate column name" error so
+      `ADD COLUMN` files stay idempotent on re-run.
+- [x] **(V0.5) `open_path` sandbox loosened to support projects.**
+      The Tauri command no longer requires paths to live under the
+      app's data dir, since project paths live wherever the user's
+      repos are. Still rejects non-absolute paths and paths that
+      don't exist.
 
 ### Explicitly NOT in V0.1
 

@@ -68,6 +68,16 @@ export type Issue = {
   description: string;
   status: "todo" | "in_progress" | "done" | "cancelled";
   assignee_agent_id?: string;
+  project_id?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type Project = {
+  id: string;
+  name: string;
+  local_path: string;
+  description: string;
   created_at: string;
   updated_at: string;
 };

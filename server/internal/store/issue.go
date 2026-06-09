@@ -13,6 +13,8 @@ type Issue struct {
 	Status          string         `json:"status"`
 	AssigneeAgentID sql.NullString `json:"-"`
 	AssigneeID      *string        `json:"assignee_agent_id,omitempty"`
+	ProjectID       sql.NullString `json:"-"`
+	Project         *string        `json:"project_id,omitempty"`
 	CreatedAt       string         `json:"created_at"`
 	UpdatedAt       string         `json:"updated_at"`
 }
@@ -21,6 +23,7 @@ type CreateIssueParams struct {
 	Title           string
 	Description     string
 	AssigneeAgentID *string
+	ProjectID       *string
 }
 
 func (s *Store) CreateIssue(p CreateIssueParams) (*Issue, error) {
@@ -30,10 +33,15 @@ func (s *Store) CreateIssue(p CreateIssueParams) (*Issue, error) {
 		assignee.String = *p.AssigneeAgentID
 		assignee.Valid = true
 	}
+	var project sql.NullString
+	if p.ProjectID != nil && *p.ProjectID != "" {
+		project.String = *p.ProjectID
+		project.Valid = true
+	}
 	_, err := s.db.Exec(`
-		INSERT INTO issue (id, title, description, assignee_agent_id)
-		VALUES (?, ?, ?, ?)
-	`, id, p.Title, p.Description, assignee)
+		INSERT INTO issue (id, title, description, assignee_agent_id, project_id)
+		VALUES (?, ?, ?, ?, ?)
+	`, id, p.Title, p.Description, assignee, project)
 	if err != nil {
 		return nil, err
 	}
@@ -42,14 +50,14 @@ func (s *Store) CreateIssue(p CreateIssueParams) (*Issue, error) {
 
 func (s *Store) GetIssue(id string) (*Issue, error) {
 	return scanIssue(s.db.QueryRow(`
-		SELECT id, title, description, status, assignee_agent_id, created_at, updated_at
+		SELECT id, title, description, status, assignee_agent_id, project_id, created_at, updated_at
 		FROM issue WHERE id = ?
 	`, id))
 }
 
 func (s *Store) ListIssues() ([]Issue, error) {
 	rows, err := s.db.Query(`
-		SELECT id, title, description, status, assignee_agent_id, created_at, updated_at
+		SELECT id, title, description, status, assignee_agent_id, project_id, created_at, updated_at
 		FROM issue ORDER BY created_at DESC
 	`)
 	if err != nil {
@@ -71,8 +79,9 @@ type UpdateIssueParams struct {
 	Title           *string
 	Description     *string
 	Status          *string
-	AssigneeAgentID *string // pointer to pointer would be needed to express "clear"; V0.1 just sets/keeps
-	ClearAssignee   bool    // when true, force NULL
+	AssigneeAgentID *string
+	ClearAssignee   bool
+	ProjectID       *string // empty string clears
 }
 
 func (s *Store) UpdateIssue(id string, p UpdateIssueParams) (*Issue, error) {
@@ -84,6 +93,7 @@ func (s *Store) UpdateIssue(id string, p UpdateIssueParams) (*Issue, error) {
 	desc := cur.Description
 	status := cur.Status
 	assignee := cur.AssigneeAgentID
+	project := cur.ProjectID
 	if p.Title != nil {
 		title = *p.Title
 	}
@@ -98,10 +108,17 @@ func (s *Store) UpdateIssue(id string, p UpdateIssueParams) (*Issue, error) {
 	} else if p.AssigneeAgentID != nil {
 		assignee = sql.NullString{String: *p.AssigneeAgentID, Valid: true}
 	}
+	if p.ProjectID != nil {
+		if *p.ProjectID == "" {
+			project = sql.NullString{}
+		} else {
+			project = sql.NullString{String: *p.ProjectID, Valid: true}
+		}
+	}
 	_, err = s.db.Exec(`
-		UPDATE issue SET title = ?, description = ?, status = ?, assignee_agent_id = ?, updated_at = datetime('now')
+		UPDATE issue SET title = ?, description = ?, status = ?, assignee_agent_id = ?, project_id = ?, updated_at = datetime('now')
 		WHERE id = ?
-	`, title, desc, status, assignee, id)
+	`, title, desc, status, assignee, project, id)
 	if err != nil {
 		return nil, err
 	}
@@ -115,12 +132,16 @@ func (s *Store) DeleteIssue(id string) error {
 
 func scanIssue(sc scanner) (*Issue, error) {
 	var i Issue
-	if err := sc.Scan(&i.ID, &i.Title, &i.Description, &i.Status, &i.AssigneeAgentID, &i.CreatedAt, &i.UpdatedAt); err != nil {
+	if err := sc.Scan(&i.ID, &i.Title, &i.Description, &i.Status, &i.AssigneeAgentID, &i.ProjectID, &i.CreatedAt, &i.UpdatedAt); err != nil {
 		return nil, err
 	}
 	if i.AssigneeAgentID.Valid {
 		v := i.AssigneeAgentID.String
 		i.AssigneeID = &v
+	}
+	if i.ProjectID.Valid {
+		v := i.ProjectID.String
+		i.Project = &v
 	}
 	return &i, nil
 }

@@ -23,6 +23,7 @@ type createIssueReq struct {
 	Title           string  `json:"title"`
 	Description     string  `json:"description"`
 	AssigneeAgentID *string `json:"assignee_agent_id,omitempty"`
+	ProjectID       *string `json:"project_id,omitempty"`
 }
 
 func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
@@ -35,11 +36,18 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "title required"})
 		return
 	}
+	if req.ProjectID != nil && *req.ProjectID != "" {
+		if _, err := h.st.GetProject(*req.ProjectID); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project not found"})
+			return
+		}
+	}
 
 	issue, err := h.st.CreateIssue(store.CreateIssueParams{
 		Title:           req.Title,
 		Description:     req.Description,
 		AssigneeAgentID: req.AssigneeAgentID,
+		ProjectID:       req.ProjectID,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -81,6 +89,7 @@ type updateIssueReq struct {
 	Status          *string `json:"status,omitempty"`
 	AssigneeAgentID *string `json:"assignee_agent_id,omitempty"`
 	ClearAssignee   bool    `json:"clear_assignee,omitempty"`
+	ProjectID       *string `json:"project_id,omitempty"` // "" clears, value sets
 }
 
 func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
@@ -95,6 +104,12 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		return
 	}
+	if req.ProjectID != nil && *req.ProjectID != "" {
+		if _, err := h.st.GetProject(*req.ProjectID); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project not found"})
+			return
+		}
+	}
 	prevAssignee := cur.AssigneeID
 	issue, err := h.st.UpdateIssue(id, store.UpdateIssueParams{
 		Title:           req.Title,
@@ -102,6 +117,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		Status:          req.Status,
 		AssigneeAgentID: req.AssigneeAgentID,
 		ClearAssignee:   req.ClearAssignee,
+		ProjectID:       req.ProjectID,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)

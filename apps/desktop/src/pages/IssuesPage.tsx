@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { useApi, type Agent, type Issue, type Task } from "../lib/api";
+import { useApi, type Agent, type Issue, type Project, type Task } from "../lib/api";
 import { cn, formatRelativeTime } from "../lib/utils";
 import { useWSEvent } from "../lib/ws";
 import { Markdown } from "../lib/markdown";
@@ -26,20 +26,35 @@ export function IssuesPage() {
     queryKey: ["agents"],
     queryFn: () => request<{ agents: Agent[] }>("/api/agents"),
   });
+  const projectsQ = useQuery({
+    queryKey: ["projects"],
+    queryFn: () => request<{ projects: Project[] }>("/api/projects"),
+  });
 
   // Live update on any issue/task event — coarse invalidation is fine for V0.1.
   useWSEvent("issue:", () => qc.invalidateQueries({ queryKey: ["issues"] }));
   useWSEvent("task:", () => qc.invalidateQueries({ queryKey: ["issues"] }));
+  useWSEvent("project:", () => qc.invalidateQueries({ queryKey: ["projects"] }));
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const issues = issuesQ.data?.issues ?? [];
   const agents = agentsQ.data?.agents ?? [];
+  const projects = projectsQ.data?.projects ?? [];
   const selected = issues.find((i) => i.id === selectedId) ?? null;
 
   return (
     <div className="grid h-full grid-cols-[360px_1fr]">
       <section className="flex flex-col border-r border-border">
-        <Header title="Issues" right={<CreateIssueButton agents={agents} onCreated={(id) => setSelectedId(id)} />} />
+        <Header
+          title="Issues"
+          right={
+            <CreateIssueButton
+              agents={agents}
+              projects={projects}
+              onCreated={(id) => setSelectedId(id)}
+            />
+          }
+        />
         <div className="flex-1 overflow-auto">
           {issuesQ.isLoading ? (
             <div className="p-6 text-sm opacity-60">Loading…</div>
@@ -75,7 +90,9 @@ export function IssuesPage() {
       </section>
 
       <section className="overflow-auto">
-        {selected ? <IssueDetail issue={selected} agents={agents} /> : (
+        {selected ? (
+          <IssueDetail issue={selected} agents={agents} projects={projects} />
+        ) : (
           <div className="grid h-full place-items-center text-sm opacity-50">
             Select an issue.
           </div>
@@ -114,9 +131,11 @@ function Header({ title, right }: { title: string; right?: React.ReactNode }) {
 
 function CreateIssueButton({
   agents,
+  projects,
   onCreated,
 }: {
   agents: Agent[];
+  projects: Project[];
   onCreated: (id: string) => void;
 }) {
   const { request } = useApi();
@@ -125,6 +144,7 @@ function CreateIssueButton({
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [assignee, setAssignee] = useState("");
+  const [projectId, setProjectId] = useState("");
 
   const m = useMutation({
     mutationFn: async () => {
@@ -134,6 +154,7 @@ function CreateIssueButton({
           title,
           description,
           assignee_agent_id: assignee || undefined,
+          project_id: projectId || undefined,
         }),
       });
       return resp.issue;
@@ -144,6 +165,7 @@ function CreateIssueButton({
       setTitle("");
       setDescription("");
       setAssignee("");
+      setProjectId("");
       onCreated(issue.id);
     },
   });
@@ -174,6 +196,18 @@ function CreateIssueButton({
               rows={5}
               className="mb-2 w-full resize-none rounded border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-accent/60"
             />
+            <select
+              value={projectId}
+              onChange={(e) => setProjectId(e.target.value)}
+              className="mb-2 w-full rounded border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-accent/60"
+            >
+              <option value="">— No project (use sandbox) —</option>
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name} ({p.local_path})
+                </option>
+              ))}
+            </select>
             <select
               value={assignee}
               onChange={(e) => setAssignee(e.target.value)}
@@ -211,7 +245,15 @@ function CreateIssueButton({
   );
 }
 
-function IssueDetail({ issue, agents }: { issue: Issue; agents: Agent[] }) {
+function IssueDetail({
+  issue,
+  agents,
+  projects,
+}: {
+  issue: Issue;
+  agents: Agent[];
+  projects: Project[];
+}) {
   const { request } = useApi();
   const qc = useQueryClient();
   const tasksQ = useQuery({
@@ -238,7 +280,35 @@ function IssueDetail({ issue, agents }: { issue: Issue; agents: Agent[] }) {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["issues"] }),
   });
 
+  const setProject = useMutation({
+    mutationFn: (projectId: string) =>
+      request<Issue>(`/api/issues/${issue.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ project_id: projectId }),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["issues"] }),
+  });
+
+  const openProjectFolder = useMutation({
+    mutationFn: async (path: string) => {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("open_path", { path });
+    },
+  });
+
   const tasks = tasksQ.data?.tasks ?? [];
+  const project = issue.project_id
+    ? projects.find((p) => p.id === issue.project_id)
+    : null;
+  // The "workspace" the user can open is either the project path or, in
+  // sandbox mode, the work_dir of any task that actually produced files.
+  // Empty-workspace cleanup nulls out task.work_dir for empty runs so
+  // tasks without any artifact-producing run won't surface a button.
+  const sandboxPath = tasks
+    .map((t) => t.work_dir)
+    .find((wd): wd is string => !!wd);
+  const workspacePath = project?.local_path ?? sandboxPath ?? null;
+  const workspaceLabel = project ? "Open project" : "Open workspace";
 
   return (
     <div className="flex h-full flex-col">
@@ -252,7 +322,7 @@ function IssueDetail({ issue, agents }: { issue: Issue; agents: Agent[] }) {
         {issue.description ? (
           <Markdown className="text-sm opacity-80">{issue.description}</Markdown>
         ) : null}
-        <div className="mt-4 flex items-center gap-2">
+        <div className="mt-4 flex flex-wrap items-center gap-2">
           <select
             value={issue.assignee_agent_id ?? ""}
             onChange={(e) => setAssignee.mutate(e.target.value)}
@@ -265,6 +335,27 @@ function IssueDetail({ issue, agents }: { issue: Issue; agents: Agent[] }) {
               </option>
             ))}
           </select>
+          <select
+            value={issue.project_id ?? ""}
+            onChange={(e) => setProject.mutate(e.target.value)}
+            className="rounded border border-border bg-bg px-2 py-1 text-xs"
+          >
+            <option value="">— Sandbox (no project) —</option>
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>
+                📁 {p.name}
+              </option>
+            ))}
+          </select>
+          {workspacePath ? (
+            <button
+              onClick={() => openProjectFolder.mutate(workspacePath)}
+              title={workspacePath}
+              className="rounded border border-border px-2 py-1 text-xs hover:bg-accent/10 hover:text-accent"
+            >
+              📁 {workspaceLabel}
+            </button>
+          ) : null}
           <button
             disabled={!issue.assignee_agent_id || run.isPending}
             onClick={() => run.mutate()}
@@ -273,6 +364,17 @@ function IssueDetail({ issue, agents }: { issue: Issue; agents: Agent[] }) {
             {run.isPending ? "Enqueuing…" : "Run again"}
           </button>
         </div>
+        {project ? (
+          <div className="mt-2 space-y-1">
+            <div className="rounded border border-warn/30 bg-warn/5 px-2 py-1 text-[11px] text-warn/80">
+              ⚠ Agent runs in <code className="font-mono">{project.local_path}</code> — it can read and modify files there.
+            </div>
+            <div className="rounded border border-accent/20 bg-accent/5 px-2 py-1 text-[11px] text-accent/80">
+              💡 If this folder contains <code className="font-mono">AGENTS.md</code> /{" "}
+              <code className="font-mono">CLAUDE.md</code>, the agent loads them automatically.
+            </div>
+          </div>
+        ) : null}
       </div>
 
       <div className="flex-1 overflow-auto p-6">
@@ -313,13 +415,6 @@ function TaskRow({ task, isResumed }: { task: Task; isResumed: boolean }) {
     mutationFn: () => request<Task>(`/api/tasks/${task.id}/cancel`, { method: "POST" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["issue-tasks", task.issue_id] }),
   });
-  const openFolder = useMutation({
-    mutationFn: async () => {
-      if (!task.work_dir) throw new Error("no work dir on this task");
-      const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("open_path", { path: task.work_dir });
-    },
-  });
   const isActive = task.status === "queued" || task.status === "dispatched" || task.status === "running";
   // Default open for the freshest active task; collapsed once it terminates.
   const [open, setOpen] = useState(isActive);
@@ -351,15 +446,6 @@ function TaskRow({ task, isResumed }: { task: Task; isResumed: boolean }) {
         </button>
         <div className="flex items-center gap-3 text-xs opacity-60">
           <span>{formatRelativeTime(task.created_at)}</span>
-          {task.work_dir ? (
-            <button
-              onClick={() => openFolder.mutate()}
-              title={task.work_dir}
-              className="rounded border border-border px-2 py-0.5 text-[10px] hover:bg-accent/10 hover:text-accent"
-            >
-              📁 Open workspace
-            </button>
-          ) : null}
           {isActive && (
             <button
               onClick={() => cancel.mutate()}

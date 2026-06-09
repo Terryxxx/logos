@@ -126,12 +126,19 @@ fn sidecar_disabled() -> bool {
 }
 
 /// Open an absolute path in the OS file explorer / Finder / file manager.
-/// Used by the "Open workspace" button on task cards so the user can
-/// inspect / open / edit the files the agent produced.
 ///
-/// Refuses any non-absolute path, and refuses paths whose canonical form
-/// escapes the per-user data dir (the sandbox we created for ourselves).
-/// This is a UI-convenience command, not a general FS-browse capability.
+/// Two classes of paths are allowed:
+///   1. Anywhere under the user's data dir (per-issue sandbox workspaces).
+///   2. Anywhere a user-configured Project points at -- those live wherever
+///      the user wants (typically a git repo checkout). We can't validate
+///      against the project list from Rust without holding a DB handle,
+///      so for V0.5 we accept any absolute path the WebView hands us.
+///      Localhost-only HTTP + the WebView being part of our own bundle
+///      bounds the threat: a hostile WebView would already control the
+///      app entirely, opening a folder is not the worst it could do.
+///
+/// Refuses non-absolute paths and paths whose canonical form doesn't
+/// exist on disk -- these are pure foot-guns, not security boundaries.
 #[tauri::command]
 fn open_path(app: tauri::AppHandle, path: String) -> Result<(), CommandError> {
     let p = std::path::Path::new(&path);
@@ -141,18 +148,6 @@ fn open_path(app: tauri::AppHandle, path: String) -> Result<(), CommandError> {
     let canonical = p
         .canonicalize()
         .map_err(|e| format!("canonicalize {path}: {e}"))?;
-    let dir = data_dir()?;
-    let dir_canonical = dir
-        .canonicalize()
-        .map_err(|e| format!("canonicalize data dir: {e}"))?;
-    if !canonical.starts_with(&dir_canonical) {
-        return Err(format!(
-            "refusing path outside data dir ({} not under {})",
-            canonical.display(),
-            dir_canonical.display()
-        )
-        .into());
-    }
     app.opener()
         .open_path(canonical.to_string_lossy().to_string(), None::<&str>)
         .map_err(|e| format!("open path: {e}").into())
