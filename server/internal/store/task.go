@@ -145,6 +145,15 @@ func (s *Store) FailTask(id, errMsg, reason, sessionID, workDir string) (*Task, 
 	return scanTask(row)
 }
 
+// ClearTaskWorkDir wipes the work_dir column for a task whose workspace
+// turned out to be empty after the agent exited. The UI hides the
+// "Open workspace" affordance when work_dir is null, so this cleanly
+// signals "no files produced" without losing the task row itself.
+func (s *Store) ClearTaskWorkDir(id string) error {
+	_, err := s.db.Exec(`UPDATE agent_task_queue SET work_dir = NULL WHERE id = ?`, id)
+	return err
+}
+
 func (s *Store) CancelTask(id string) (*Task, error) {
 	row := s.db.QueryRow(`
 		UPDATE agent_task_queue
@@ -218,4 +227,39 @@ func (s *Store) NextSeq(taskID string) (int, error) {
 		return 0, err
 	}
 	return int(seq.Int64) + 1, nil
+}
+
+// GetLastSessionForIssueAgent returns the most recent non-empty session_id
+// for tasks of the same (issue, agent) excluding the given task. Empty
+// string when there is no prior resumable session.
+//
+// Why scoped by both issue AND agent: a Claude session id is meaningless
+// to Copilot (and vice versa). Resuming requires the SAME backend.
+//
+// Why we exclude excludeTaskID: this gets called WHILE the current task
+// is dispatched but not yet finished -- if it ever wrote a partial
+// session row, we don't want to resume from ourselves.
+func (s *Store) GetLastSessionForIssueAgent(issueID, agentID, excludeTaskID string) (string, error) {
+	var sess sql.NullString
+	err := s.db.QueryRow(`
+		SELECT session_id FROM agent_task_queue
+		WHERE issue_id = ?
+		  AND agent_id = ?
+		  AND id != ?
+		  AND session_id IS NOT NULL
+		  AND length(session_id) > 0
+		  AND status IN ('completed', 'failed')
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, issueID, agentID, excludeTaskID).Scan(&sess)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if !sess.Valid {
+		return "", nil
+	}
+	return sess.String, nil
 }

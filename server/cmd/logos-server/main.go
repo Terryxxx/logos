@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -72,7 +73,7 @@ func main() {
 	}
 
 	taskSvc := service.NewTaskService(st, bus)
-	runner := service.NewRunner(st, taskSvc, agent.RegistryDefault())
+	runner := service.NewRunner(st, taskSvc, agent.RegistryDefault(), filepath.Join(cfg.DataDir, "workspaces"))
 	go runner.Run(context.Background())
 
 	h := handler.New(st, taskSvc, bus, tok)

@@ -112,8 +112,8 @@ func (CopilotBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 			}
 
 			// Drop ephemeral events (UI noise: skills_loaded, mcp_servers_loaded,
-			// message_delta, message_start, …). The non-ephemeral siblings carry
-			// the final form anyway.
+			// message_delta, message_start, background_tasks_changed, ...).
+			// The non-ephemeral siblings carry the final form anyway.
 			if ephemeral, _ := ev["ephemeral"].(bool); ephemeral {
 				continue
 			}
@@ -124,42 +124,38 @@ func (CopilotBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 			switch t {
 
 			case "assistant.message":
-				// Final text of one assistant turn.
+				// Final text of one assistant turn. We intentionally do NOT
+				// read data.toolRequests here -- empirically that array is
+				// either empty or duplicates information we already got from
+				// the tool.execution_start events.
 				if content, ok := data["content"].(string); ok && content != "" {
 					finalText = content
 					msgs <- Message{Kind: "text", Content: content}
 				}
-				// toolRequests[] is populated when the turn invoked tools.
-				if reqs, ok := data["toolRequests"].([]any); ok {
-					for _, r := range reqs {
-						rm, _ := r.(map[string]any)
-						name, _ := rm["name"].(string)
-						input, _ := rm["input"].(map[string]any)
-						msgs <- Message{Kind: "tool_use", Tool: name, Input: input}
-					}
-				}
 
-			case "assistant.tool_call":
-				// Some copilot versions surface a separate tool_call event.
-				name, _ := data["name"].(string)
-				input, _ := data["input"].(map[string]any)
+			case "tool.execution_start":
+				// Copilot's authoritative "agent is invoking a tool" event.
+				// data: {toolCallId, toolName, arguments, model, turnId}
+				name, _ := data["toolName"].(string)
+				input, _ := data["arguments"].(map[string]any)
 				msgs <- Message{Kind: "tool_use", Tool: name, Input: input}
 
-			case "tool_result", "assistant.tool_result":
-				output, _ := data["content"].(string)
-				if output == "" {
-					if o, ok := data["output"].(string); ok {
-						output = o
-					}
+			case "tool.execution_complete":
+				// data: {toolCallId, success, result, toolTelemetry, ...}
+				// `result` can be a string (typical) or a structured value
+				// (some MCP tools). Normalise to a string for UI display.
+				out := stringifyToolResult(data["result"])
+				if success, ok := data["success"].(bool); ok && !success {
+					out = "[failed] " + out
 				}
-				msgs <- Message{Kind: "tool_result", Output: output}
+				msgs <- Message{Kind: "tool_result", Output: out}
 
 			case "user.message":
-				// Echo of our own prompt — skip; the UI knows what it sent.
+				// Echo of our own prompt -- skip; the UI knows what it sent.
 
 			case "assistant.turn_start", "assistant.turn_end":
-				// Boundary markers; emit as status for debugging without
-				// polluting the visible transcript too much.
+				// Boundary markers; useful for debug but too noisy for the
+				// main transcript. Emit as status so power users can see them.
 				msgs <- Message{Kind: "status", Content: t}
 
 			case "result":
@@ -178,9 +174,9 @@ func (CopilotBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 				msgs <- Message{Kind: "error", Content: errMsg}
 
 			default:
-				// Anything we did not classify: keep as raw status so debugging
-				// surfaces unknown event types without crashing the stream.
-				msgs <- Message{Kind: "status", Content: jsonString(ev)}
+				// Unknown event types fall through as compact status lines so
+				// we can spot when Copilot adds new event types in the future.
+				msgs <- Message{Kind: "status", Content: t}
 			}
 		}
 		if err := sc.Err(); err != nil && !errors.Is(err, context.Canceled) {
@@ -208,4 +204,22 @@ func (CopilotBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 	}()
 
 	return msgs, res, nil
+}
+
+// stringifyToolResult normalises the variety of shapes Copilot puts in
+// tool.execution_complete.data.result. Strings come through verbatim;
+// objects / arrays / numbers / bools get JSON-marshalled. Returns ""
+// for nil input.
+func stringifyToolResult(v any) string {
+	if v == nil {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Sprintf("%v", v)
+	}
+	return string(b)
 }

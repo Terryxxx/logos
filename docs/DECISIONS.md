@@ -451,6 +451,101 @@ than "the everything".
 
 ---
 
+## ADR-016 · Per-issue (not per-task) workspace directories
+
+**Context.** V0.4 introduced isolated per-task working directories so
+agents could write files without touching the user's home dir. The
+original implementation gave each task its own UUID-named folder
+(`workspaces/<task_id>/`). Combined with the V0.4 session-resume
+feature this immediately produced an inconsistency:
+
+- task A creates `notes.md` in its workdir
+- user clicks "Run again" -> task B resumes the same agent session
+  (Copilot/Claude remembers in conversation "I just created notes.md")
+- but task B has a fresh empty workdir -> agent's mental model
+  diverges from the filesystem
+
+**Decision.** Make the workspace path keyed by issue, not by task:
+`workspaces/issue-<issue_id>/`. All tasks on the same issue share the
+folder. The keying falls back to `workspaces/task-<task_id>/` for the
+future task kinds (chat / quick-create) that don't carry an issue id.
+
+**Why.**
+
+- Aligns the agent's "memory" (the resumed session) with the
+  filesystem state. "Run again" feels like genuinely continuing the
+  work, not starting in a parallel universe.
+- Side effect: one issue = one place to find everything the agent
+  did. Matches how a human would organise their own scratch dirs.
+
+**Trade-offs accepted.**
+
+- True parallelism on one issue would race writes, but V0.4 tasks are
+  per-agent serial (`max_concurrent_tasks=1`) and the UI doesn't even
+  expose multi-launch. If we add chat (V0.5) or quick-create (V0.6)
+  with parallel runs, those use the per-task fallback path already.
+- Old per-task workspace directories from before this change are
+  orphaned -- not auto-migrated. They keep working (the row still
+  points at a real path) but no resume can pull in their files.
+  Acceptable for the pre-release author audience.
+
+**Revisit trigger.** Multi-user / team mode where two members might
+"Run again" the same issue concurrently. At that point we need either
+optimistic locking on the directory or per-attempt workspaces with
+explicit "import previous artifacts" UX.
+
+---
+
+## ADR-017 · Empty-workspace post-run cleanup
+
+**Context.** A lot of tasks are pure Q&A ("What's the capital of
+France?") and never touch the filesystem. Pre-creating a workdir for
+every task left empty `issue-*` directories accumulating under the
+data dir and a misleading "📁 Open workspace" button leading to nothing.
+
+**Decision.** After the agent process exits, runner checks the
+workdir. If it's empty: `os.Remove` the directory AND
+`UPDATE agent_task_queue SET work_dir = NULL` for this task. The UI
+hides the button when `work_dir` is null.
+
+**Why.**
+
+- No phantom "empty" buttons.
+- No empty-directory clutter under `~/Library/.../Logos/workspaces/`.
+- Symmetric to the agent's actual behavior: if it made files, the
+  folder and button exist; if it didn't, neither does.
+
+**Trade-offs accepted.**
+
+- The per-issue shared workspace means a later task on the same issue
+  will recreate the folder via `MkdirAll`. That's fine and intentional.
+- This task's column gets cleared, but other tasks on the same issue
+  keep their own `work_dir` cells. Conceptually correct (each task
+  reports its own "did I produce anything") but means the issue-level
+  truth ("does this issue have artifacts?") has to be computed by the
+  UI from any non-null `work_dir`. Good enough for V0.4.
+
+---
+
+## ADR-018 · Migrate from `tauri-plugin-shell::open` to `tauri-plugin-opener`
+
+**Context.** Tauri 2.x deprecated the `Shell::open` API in favour of a
+dedicated `tauri-plugin-opener` crate. The compiler emits a warning on
+every build.
+
+**Decision.** Add `tauri-plugin-opener`, initialise it alongside the
+shell plugin (which we still need for the sidecar), and switch the
+`open_path` command to `OpenerExt::open_path`. Capability changes from
+`shell:allow-open` to `opener:allow-open-path` + `opener:default`.
+
+**Why.** Removes the deprecation warning, future-proofs against the
+day Tauri actually removes the old API.
+
+**Trade-offs.** One more plugin in the dependency tree (~30 KB
+compiled). Acceptable.
+
+---
+
 ## How to add a new ADR
 
 1. Pick the next number (`ADR-XXX`).

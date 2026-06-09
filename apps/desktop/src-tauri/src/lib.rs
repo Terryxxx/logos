@@ -24,6 +24,7 @@ use std::{
 
 use serde::Serialize;
 use tauri::Manager;
+use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_shell::{
     process::{CommandChild, CommandEvent},
     ShellExt,
@@ -124,10 +125,44 @@ fn sidecar_disabled() -> bool {
         .unwrap_or(false)
 }
 
+/// Open an absolute path in the OS file explorer / Finder / file manager.
+/// Used by the "Open workspace" button on task cards so the user can
+/// inspect / open / edit the files the agent produced.
+///
+/// Refuses any non-absolute path, and refuses paths whose canonical form
+/// escapes the per-user data dir (the sandbox we created for ourselves).
+/// This is a UI-convenience command, not a general FS-browse capability.
+#[tauri::command]
+fn open_path(app: tauri::AppHandle, path: String) -> Result<(), CommandError> {
+    let p = std::path::Path::new(&path);
+    if !p.is_absolute() {
+        return Err(format!("refusing relative path: {path}").into());
+    }
+    let canonical = p
+        .canonicalize()
+        .map_err(|e| format!("canonicalize {path}: {e}"))?;
+    let dir = data_dir()?;
+    let dir_canonical = dir
+        .canonicalize()
+        .map_err(|e| format!("canonicalize data dir: {e}"))?;
+    if !canonical.starts_with(&dir_canonical) {
+        return Err(format!(
+            "refusing path outside data dir ({} not under {})",
+            canonical.display(),
+            dir_canonical.display()
+        )
+        .into());
+    }
+    app.opener()
+        .open_path(canonical.to_string_lossy().to_string(), None::<&str>)
+        .map_err(|e| format!("open path: {e}").into())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_opener::init())
         .manage(SidecarState {
             child: Mutex::new(None),
         })
@@ -186,7 +221,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_runtime_config])
+        .invoke_handler(tauri::generate_handler![get_runtime_config, open_path])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 

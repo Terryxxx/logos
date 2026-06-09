@@ -283,9 +283,22 @@ function IssueDetail({ issue, agents }: { issue: Issue; agents: Agent[] }) {
           <div className="text-sm opacity-60">No runs yet.</div>
         ) : (
           <ul className="space-y-2">
-            {tasks.map((t) => (
-              <TaskRow key={t.id} task={t} />
-            ))}
+            {tasks.map((t) => {
+              // Resume detection: a task is "resumed from a prior run"
+              // when its session_id matches another EARLIER task on the
+              // same issue+agent. The server's GetLastSessionForIssueAgent
+              // hands back exactly that id, so if we see it again here, the
+              // agent CLI continued that session via --resume.
+              const isResumed =
+                !!t.session_id &&
+                tasks.some(
+                  (other) =>
+                    other.id !== t.id &&
+                    other.session_id === t.session_id &&
+                    other.created_at < t.created_at,
+                );
+              return <TaskRow key={t.id} task={t} isResumed={isResumed} />;
+            })}
           </ul>
         )}
       </div>
@@ -293,12 +306,19 @@ function IssueDetail({ issue, agents }: { issue: Issue; agents: Agent[] }) {
   );
 }
 
-function TaskRow({ task }: { task: Task }) {
+function TaskRow({ task, isResumed }: { task: Task; isResumed: boolean }) {
   const { request } = useApi();
   const qc = useQueryClient();
   const cancel = useMutation({
     mutationFn: () => request<Task>(`/api/tasks/${task.id}/cancel`, { method: "POST" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["issue-tasks", task.issue_id] }),
+  });
+  const openFolder = useMutation({
+    mutationFn: async () => {
+      if (!task.work_dir) throw new Error("no work dir on this task");
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("open_path", { path: task.work_dir });
+    },
   });
   const isActive = task.status === "queued" || task.status === "dispatched" || task.status === "running";
   // Default open for the freshest active task; collapsed once it terminates.
@@ -320,9 +340,26 @@ function TaskRow({ task }: { task: Task }) {
           </span>
           <StatusBadge status={task.status} />
           <span className="font-mono text-xs opacity-60">{task.id.slice(0, 8)}</span>
+          {isResumed ? (
+            <span
+              title={`Resumed from prior session ${task.session_id?.slice(0, 8) ?? ""}`}
+              className="rounded border border-accent/40 bg-accent/10 px-1.5 py-0.5 text-[9px] font-mono text-accent"
+            >
+              ↻ resumed
+            </span>
+          ) : null}
         </button>
         <div className="flex items-center gap-3 text-xs opacity-60">
           <span>{formatRelativeTime(task.created_at)}</span>
+          {task.work_dir ? (
+            <button
+              onClick={() => openFolder.mutate()}
+              title={task.work_dir}
+              className="rounded border border-border px-2 py-0.5 text-[10px] hover:bg-accent/10 hover:text-accent"
+            >
+              📁 Open workspace
+            </button>
+          ) : null}
           {isActive && (
             <button
               onClick={() => cancel.mutate()}

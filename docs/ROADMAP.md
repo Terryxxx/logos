@@ -35,6 +35,24 @@ works end-to-end on the author's machine.
       Rust spawns it on startup, kills it on exit, and forwards
       stdout/stderr to the Tauri console. Set `LOGOS_SIDECAR=off` to
       bypass for `go run` hot-reload workflows.
+- [x] **(V0.4) Per-issue workspace + session resume.**
+      Each issue gets a shared workspace at
+      `<data-dir>/workspaces/issue-<issue_id>/`. The agent CLI runs with
+      that as cwd, so files it creates are isolated from the user's home
+      and persisted across re-runs of the same issue. "Run again" passes
+      the prior task's `session_id` to the agent's `--resume` flag, so
+      the new task continues the same conversation. A `📁 Open
+      workspace` button on each task card opens the folder in the OS
+      file manager (via `tauri-plugin-opener`, sandboxed to data-dir
+      paths). Empty workspaces (pure Q&A tasks that never touched the
+      filesystem) are auto-cleaned post-run so the button only appears
+      when there's something to see. Resume detection in the UI compares
+      `session_id` across same-issue tasks and shows a `↻ resumed` chip.
+- [x] **(V0.4) Copilot tool-call rendering fixed.** Backend now parses
+      `tool.execution_start` / `tool.execution_complete` (was previously
+      reading the empty `assistant.message.toolRequests` array). Tool
+      calls expand to show `{ toolName, arguments }` JSON; tool results
+      show the actual stdout.
 
 ### Explicitly NOT in V0.1
 
@@ -104,11 +122,6 @@ than the author would actually use. ETA: ~3 weeks after V0.1.
 
 ### Must (remaining)
 
-- [ ] **Per-task workspace directory.** `<data-dir>/workspaces/<task_id>/`
-      created before spawn; passed as `cwd` to the agent CLI; GC'd 24 h
-      after task terminates (Multica-style `.gc_meta.json` marker).
-- [ ] **Resume Claude sessions on "Run again".** Pass the last
-      `session_id` from the most recent task on the same issue.
 - [ ] **Tauri auto-updater** via `tauri-plugin-updater`. Release channel
       from GitHub Releases.
 - [ ] **Proper Tauri icons.** Generate via `tauri icon path/to/512.png`.
