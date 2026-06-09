@@ -23,7 +23,41 @@ log for past versions.
 Listed by version, newest first. Each item shipped to `main` and is
 verified end-to-end on Windows.
 
-### V0.5 -- Projects (current)
+### V0.6 -- Project-aware UX (current)
+
+- [x] **Project info probe.** New `server/internal/projectinfo`
+      package shells out to `git` to report branch, head commit,
+      dirty count, recent commits, and detected instruction files
+      (`AGENTS.md`, `CLAUDE.md`, `.claude/skills/`, `.agents/skills/`).
+      All read-only, 4-second timeout per git call, gracefully
+      degrades when the project isn't a git repo.
+- [x] **`GET /api/projects/:id/info`** endpoint returns the combined
+      probe in one round-trip. UI panels share a TanStack Query key
+      so multiple consumers dedupe.
+- [x] **`ProjectInfoPanel` React component** with branch chip, dirty
+      badge, instruction-file chips with hover descriptions, and a
+      collapsible recent-commits list. Rendered both in IssueDetail
+      (compact) and on each Projects-tab card.
+- [x] **Dirty-repo confirm guard.** Run/Run-again on a project-mode
+      issue pops a confirmation when the working tree is dirty so
+      the user can see they're about to run an agent on a non-clean
+      checkout (default behaviour: allow after confirm).
+- [x] **Per-task diff stat.** New `task.{pre_ref, post_ref,
+      diff_additions, diff_deletions, diff_changed_files}` columns
+      (migration `003_task_diff_stat.sql`). Runner captures HEAD
+      before dispatch, computes `git diff --shortstat preRef`
+      (commits + uncommitted) plus untracked files after the agent
+      exits, persists into the row BEFORE the WS task:* event so the
+      UI gets the `+12 −3 · 4 files` chip on first render.
+      Schema mirrors Multica's `github_pull_request.{additions,
+      deletions, changed_files}` so V1.x can backfill from a GitHub
+      webhook without a migration. Sandbox tasks leave columns NULL
+      and the chip is hidden.
+- [x] **`NullInt` JSON wrapper** alongside `NullString` for the new
+      nullable integer columns -- marshals as a bare JSON number or
+      `null`, never the buggy `{Int64,Valid}` shape.
+
+### V0.5 -- Projects
 
 - [x] **Projects.** A `project` table maps a name + description to a
       real on-disk path (typically a git repo). Issues optionally bind
@@ -141,54 +175,27 @@ Found within the first day of use, fixed in place.
 
 ## Next up
 
-### V0.6 -- Project-aware UX polish
+### V0.6 -- shipped
 
-**Goal:** make the everyday "agent in my repo" loop trustworthy and
-informative. Now that V0.5 lets agents touch real code, the user
-needs **fast feedback about what they're getting into**.
+See "Done so far → V0.6" above. The research notes that informed the
+design are preserved here so the rationale survives a future re-read:
 
-#### Must
-
-- [ ] **Detect git status on the project** before each run, surface
-      in IssueDetail: branch name + dirty/clean indicator + "X
-      uncommitted changes" link.
-- [ ] **Warn loud** when running agent against a dirty repo (default
-      behavior allows it, since some flows do `git add -A` themselves,
-      but the warning is shown).
-- [ ] **Show detected instruction files** on the project card and in
-      IssueDetail: `📄 AGENTS.md`, `📄 CLAUDE.md`,
-      `📁 .claude/skills/` etc, with a click-to-preview popover.
-- [ ] **`git status --porcelain` post-task summary**: after a task
-      completes in project mode, show the diff stat
-      (`+12 -3 in 4 files`) and a "View diff" button that opens the
-      configured diff tool (or VS Code).
-
-#### Should
-
-- [ ] `git log --oneline -5` on the project card so you can see what
-      shipped recently.
-- [ ] Per-project default agent ("issues in 'logos' default to Copilot
-      Helper").
-
-#### Research notes -- where Multica diverges
-
-Multica does **not** run `git status` against a local repo because its
-"workspace" is a runtime sandbox (VHD / container), not the user's
-checkout. Instead it surfaces diff stats from the **PR webhook**:
-`github_pull_request.additions / deletions / changed_files` (migration
-`092_pr_stats.up.sql`), and the card hides the row when
-`total === 0` to avoid showing a misleading "+0 −0" before the
-webhook has caught up.
-
-Our V0.6 stays **local-only** (it works without any GitHub account
-configured). We'll keep the schema shape -- a `task_diff_stat` row
-with `additions / deletions / changed_files` -- so that V1.x can
-later fill the same columns from a GitHub webhook when remote PR
-integration lands, and the UI never needs to learn the difference.
-
-`AGENTS.md` / `CLAUDE.md` *detection* is **our own** addition --
-Multica has no equivalent UI; the CLIs auto-load them silently
-and that's it.
+- Multica does **not** run `git status` against a local repo because its
+  "workspace" is a runtime sandbox (VHD / container), not the user's
+  checkout. Instead it surfaces diff stats from the **PR webhook**:
+  `github_pull_request.additions / deletions / changed_files` (migration
+  `092_pr_stats.up.sql`), and the card hides the row when
+  `total === 0` to avoid showing a misleading "+0 −0" before the
+  webhook has caught up.
+- V0.6 stays **local-only** (works without any GitHub account
+  configured). We kept the schema shape -- the
+  `task.{diff_additions, diff_deletions, diff_changed_files}` columns
+  match Multica's PR columns 1:1, so V1.x can fill them from a webhook
+  payload without a migration and the UI never has to learn the
+  difference.
+- `AGENTS.md` / `CLAUDE.md` *detection* is **our own** addition --
+  Multica has no equivalent UI; the CLIs auto-load them silently and
+  that's it.
 
 ### V0.7 -- Comments + multi-turn
 

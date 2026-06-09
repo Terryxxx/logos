@@ -1,11 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { useApi, type Agent, type Issue, type Project, type Task } from "../lib/api";
+import { useApi, type Agent, type Issue, type Project, type ProjectInfo, type Task } from "../lib/api";
 import { cn, formatRelativeTime } from "../lib/utils";
 import { useWSEvent } from "../lib/ws";
 import { Markdown } from "../lib/markdown";
 import { TaskConversation } from "../components/task-conversation";
+import { DiffStatChip, ProjectInfoPanel } from "../components/project-info";
 
 const STATUS_LABEL: Record<Issue["status"], string> = {
   todo: "Todo",
@@ -271,6 +272,40 @@ function IssueDetail({
     onSuccess: () => qc.invalidateQueries({ queryKey: ["issue-tasks", issue.id] }),
   });
 
+  const tasks = tasksQ.data?.tasks ?? [];
+  const project = issue.project_id
+    ? projects.find((p) => p.id === issue.project_id)
+    : null;
+
+  // V0.6: peek at project state at the IssueDetail level too. The query
+  // key matches ProjectInfoPanel's (project-info, id, runKey) so
+  // TanStack Query dedupes -- both render from the same cached payload.
+  // runKey = latest task id so a just-completed run refreshes the
+  // status badge (the panel might still show the pre-run dirty count
+  // until then).
+  const latestTaskId = tasks[0]?.id;
+  const projectInfoQ = useQuery({
+    queryKey: ["project-info", issue.project_id ?? "", latestTaskId],
+    queryFn: () =>
+      request<ProjectInfo>(`/api/projects/${issue.project_id}/info`),
+    enabled: !!issue.project_id,
+    staleTime: 5_000,
+  });
+  const dirty = projectInfoQ.data?.git.dirty ?? false;
+  const dirtyCount = projectInfoQ.data?.git.dirty_count ?? 0;
+
+  const handleRun = () => {
+    if (dirty) {
+      const ok = window.confirm(
+        `The project has ${dirtyCount} uncommitted change${dirtyCount === 1 ? "" : "s"}. ` +
+          `The agent will see (and may modify) the dirty working tree. ` +
+          `Continue anyway?`,
+      );
+      if (!ok) return;
+    }
+    run.mutate();
+  };
+
   const setAssignee = useMutation({
     mutationFn: (agentId: string) =>
       request<Issue>(`/api/issues/${issue.id}`, {
@@ -296,10 +331,6 @@ function IssueDetail({
     },
   });
 
-  const tasks = tasksQ.data?.tasks ?? [];
-  const project = issue.project_id
-    ? projects.find((p) => p.id === issue.project_id)
-    : null;
   // The "workspace" the user can open is either the project path or, in
   // sandbox mode, the work_dir of any task that actually produced files.
   // Empty-workspace cleanup nulls out task.work_dir for empty runs so
@@ -358,20 +389,22 @@ function IssueDetail({
           ) : null}
           <button
             disabled={!issue.assignee_agent_id || run.isPending}
-            onClick={() => run.mutate()}
+            onClick={handleRun}
             className="rounded bg-accent/20 px-3 py-1 text-xs font-medium text-accent hover:bg-accent/30 disabled:opacity-40"
           >
             {run.isPending ? "Enqueuing…" : "Run again"}
           </button>
         </div>
         {project ? (
-          <div className="mt-2 space-y-1">
-            <div className="rounded border border-warn/30 bg-warn/5 px-2 py-1 text-[11px] text-warn/80">
-              ⚠ Agent runs in <code className="font-mono">{project.local_path}</code> — it can read and modify files there.
-            </div>
+          <div className="mt-3 space-y-2 rounded border border-border bg-bg/40 p-2.5">
+            <ProjectInfoPanel
+              projectId={project.id}
+              compact
+              runKey={tasks[0]?.id}
+            />
             <div className="rounded border border-accent/20 bg-accent/5 px-2 py-1 text-[11px] text-accent/80">
-              💡 If this folder contains <code className="font-mono">AGENTS.md</code> /{" "}
-              <code className="font-mono">CLAUDE.md</code>, the agent loads them automatically.
+              💡 Agent runs in <code className="font-mono">{project.local_path}</code> — it can read and modify files there.
+              <code className="font-mono">AGENTS.md</code> / <code className="font-mono">CLAUDE.md</code> at this path are loaded automatically.
             </div>
           </div>
         ) : null}
@@ -442,6 +475,14 @@ function TaskRow({ task, isResumed }: { task: Task; isResumed: boolean }) {
             >
               ↻ resumed
             </span>
+          ) : null}
+          {/* V0.6: project-mode diff stat chip — null-safe; sandbox tasks render nothing. */}
+          {(task.status === "completed" || task.status === "failed") ? (
+            <DiffStatChip
+              additions={task.diff_additions}
+              deletions={task.diff_deletions}
+              changedFiles={task.diff_changed_files}
+            />
           ) : null}
         </button>
         <div className="flex items-center gap-3 text-xs opacity-60">

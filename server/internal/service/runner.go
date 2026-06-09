@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/logos-app/logos/server/internal/agent"
+	"github.com/logos-app/logos/server/internal/projectinfo"
 	"github.com/logos-app/logos/server/internal/store"
 )
 
@@ -175,6 +176,21 @@ func (r *Runner) executeTask(parent context.Context, a store.Agent, task store.T
 		taskLog.Info("resuming prior agent session", "session_id", priorSession[:8])
 	}
 
+	// V0.6: capture the project's HEAD commit BEFORE the agent runs so
+	// we can compute a diff stat after it finishes. Only meaningful in
+	// project mode -- sandbox tasks have no git context. Best-effort:
+	// if the project isn't a git repo, preRef stays empty and the
+	// post-run diff probe is skipped (UI hides the diff chip).
+	var preRef string
+	if isProjectMode {
+		preRef = projectinfo.CaptureHead(parent, workDir)
+		if preRef != "" {
+			if err := r.st.SetTaskPreRef(task.ID, preRef); err != nil {
+				taskLog.Warn("set pre_ref failed", "error", err)
+			}
+		}
+	}
+
 	if _, err := r.tasks.Start(parent, task.ID); err != nil {
 		taskLog.Error("start failed", "error", err)
 		_, _ = r.tasks.Fail(parent, task.ID, "start: "+err.Error(), "start_failed", "", "")
@@ -212,6 +228,21 @@ func (r *Runner) executeTask(parent context.Context, a store.Agent, task store.T
 	if finalWorkDir == "" {
 		finalWorkDir = workDir
 	}
+
+	// V0.6: compute diff stat against the pre-run HEAD and persist
+	// BEFORE the Complete/Fail call. Order matters -- those calls fire
+	// the WS task:* event the UI uses to render the diff chip, so we
+	// need the columns populated first. Best-effort: a failure here
+	// just leaves diff_* NULL and the chip is hidden.
+	if isProjectMode && preRef != "" {
+		postRef := projectinfo.CaptureHead(parent, workDir)
+		if ds, ok := projectinfo.Diff(parent, workDir, preRef); ok {
+			if err := r.st.SetTaskDiffStat(task.ID, postRef, ds.Additions, ds.Deletions, ds.ChangedFiles); err != nil {
+				taskLog.Warn("set diff stat failed", "error", err)
+			}
+		}
+	}
+
 	switch result.Status {
 	case "completed":
 		_, _ = r.tasks.Complete(parent, task.ID, result.Output, result.SessionID, finalWorkDir)

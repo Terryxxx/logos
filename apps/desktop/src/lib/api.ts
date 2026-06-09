@@ -103,6 +103,46 @@ export type Task = {
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
+
+  // V0.6: project-mode diff capture. NULL across the board for
+  // sandbox-mode tasks; UI must check `diff_changed_files !== null`
+  // before rendering the chip (zero is a legitimate captured value).
+  pre_ref: string | null;
+  post_ref: string | null;
+  diff_additions: number | null;
+  diff_deletions: number | null;
+  diff_changed_files: number | null;
+};
+
+// V0.6: GET /api/projects/:id/info response. Snapshot of git state +
+// instruction-file presence at the moment the user opened the project.
+export type ProjectInfo = {
+  local_path: string;
+  git: {
+    available: boolean;
+    branch?: string;
+    detached: boolean;
+    head_commit?: string;
+    dirty: boolean;
+    dirty_count: number;
+  };
+  instruction_files: Array<{
+    name: string;
+    path: string;
+    kind:
+      | "agents-md"
+      | "claude-md"
+      | "skills-dir"
+      | "claude-skills-dir"
+      | "other-md";
+    size_kb: number;
+  }>;
+  recent_commits: Array<{
+    hash: string;
+    subject: string;
+    author: string;
+    when: string;
+  }>;
 };
 
 export type TaskMessage = {

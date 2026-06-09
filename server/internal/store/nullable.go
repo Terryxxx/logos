@@ -49,3 +49,33 @@ func (n NullString) ValueOr(fallback string) string {
 	}
 	return fallback
 }
+
+// NullInt mirrors NullString for nullable integer columns: marshals to
+// a bare JSON number or null. Added in V0.6 for task.diff_* counts,
+// where NULL means "not captured" (sandbox-mode task, or pre-V0.6 row)
+// and a number means "captured -- could be zero".
+type NullInt struct {
+	sql.NullInt64
+}
+
+func (n NullInt) MarshalJSON() ([]byte, error) {
+	if !n.Valid {
+		return []byte("null"), nil
+	}
+	return json.Marshal(n.Int64)
+}
+
+func (n *NullInt) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		n.Valid = false
+		n.Int64 = 0
+		return nil
+	}
+	var i int64
+	if err := json.Unmarshal(data, &i); err != nil {
+		return err
+	}
+	n.Valid = true
+	n.Int64 = i
+	return nil
+}

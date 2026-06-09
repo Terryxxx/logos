@@ -22,6 +22,14 @@ type Task struct {
 	StartedAt     NullString `json:"started_at"`
 	CompletedAt   NullString `json:"completed_at"`
 	CreatedAt     string     `json:"created_at"`
+
+	// V0.6 -- project-mode diff capture. All nullable; non-project
+	// tasks leave them NULL and the UI hides the diff chip.
+	PreRef           NullString `json:"pre_ref"`
+	PostRef          NullString `json:"post_ref"`
+	DiffAdditions    NullInt    `json:"diff_additions"`
+	DiffDeletions    NullInt    `json:"diff_deletions"`
+	DiffChangedFiles NullInt    `json:"diff_changed_files"`
 }
 
 // CreateTask inserts a new row in 'queued'. Caller (TaskService) is responsible
@@ -154,6 +162,38 @@ func (s *Store) ClearTaskWorkDir(id string) error {
 	return err
 }
 
+// SetTaskPreRef stamps the project's HEAD commit captured BEFORE the
+// agent runs. Called by the runner once for each project-mode task,
+// before dispatch. Empty ref is a no-op so callers can pass the result
+// of projectinfo.CaptureHead unconditionally.
+func (s *Store) SetTaskPreRef(id, preRef string) error {
+	if preRef == "" {
+		return nil
+	}
+	_, err := s.db.Exec(
+		`UPDATE agent_task_queue SET pre_ref = ? WHERE id = ?`,
+		preRef, id,
+	)
+	return err
+}
+
+// SetTaskDiffStat persists post-run git stats: HEAD after the run plus
+// the +adds / -dels / files summary against pre_ref captured earlier.
+// Called once after the agent exits and before WS broadcast of the
+// final task:* event so the UI sees the diff chip on the first
+// completion render.
+func (s *Store) SetTaskDiffStat(id, postRef string, additions, deletions, changedFiles int) error {
+	_, err := s.db.Exec(`
+		UPDATE agent_task_queue
+		SET post_ref = ?,
+		    diff_additions = ?,
+		    diff_deletions = ?,
+		    diff_changed_files = ?
+		WHERE id = ?
+	`, nullStr(postRef), additions, deletions, changedFiles, id)
+	return err
+}
+
 func (s *Store) CancelTask(id string) (*Task, error) {
 	row := s.db.QueryRow(`
 		UPDATE agent_task_queue
@@ -170,14 +210,16 @@ func nullStr(s string) any {
 	return s
 }
 
-const taskCols = `id, agent_id, runtime_id, issue_id, status, session_id, work_dir, result, error, failure_reason, dispatched_at, started_at, completed_at, created_at`
+const taskCols = `id, agent_id, runtime_id, issue_id, status, session_id, work_dir, result, error, failure_reason, dispatched_at, started_at, completed_at, created_at, pre_ref, post_ref, diff_additions, diff_deletions, diff_changed_files`
 const taskSelect = `SELECT ` + taskCols + ` FROM agent_task_queue`
 
 func scanTask(sc scanner) (*Task, error) {
 	var t Task
 	if err := sc.Scan(&t.ID, &t.AgentID, &t.RuntimeID, &t.IssueID, &t.Status,
 		&t.SessionID, &t.WorkDir, &t.Result, &t.Error, &t.FailureReason,
-		&t.DispatchedAt, &t.StartedAt, &t.CompletedAt, &t.CreatedAt); err != nil {
+		&t.DispatchedAt, &t.StartedAt, &t.CompletedAt, &t.CreatedAt,
+		&t.PreRef, &t.PostRef,
+		&t.DiffAdditions, &t.DiffDeletions, &t.DiffChangedFiles); err != nil {
 		return nil, err
 	}
 	return &t, nil

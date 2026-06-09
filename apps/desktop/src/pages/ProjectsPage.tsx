@@ -5,6 +5,7 @@ import { FolderOpen } from "lucide-react";
 import { useApi, type Project } from "../lib/api";
 import { formatRelativeTime } from "../lib/utils";
 import { useWSEvent } from "../lib/ws";
+import { ProjectInfoPanel } from "../components/project-info";
 
 export function ProjectsPage() {
   const { request } = useApi();
@@ -108,6 +109,9 @@ function ProjectCard({ project }: { project: Project }) {
       {project.description ? (
         <div className="mt-2 text-xs opacity-80">{project.description}</div>
       ) : null}
+      <div className="mt-3 border-t border-border pt-3">
+        <ProjectInfoPanel projectId={project.id} />
+      </div>
       <div className="mt-2 text-[10px] opacity-50">
         Created {formatRelativeTime(project.created_at)}
       </div>

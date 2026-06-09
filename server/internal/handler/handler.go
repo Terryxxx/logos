@@ -100,6 +100,7 @@ func NewRouter(h *Handler, hub *realtime.Hub, token string) http.Handler {
 				r.Get("/", h.GetProject)
 				r.Patch("/", h.UpdateProject)
 				r.Delete("/", h.DeleteProject)
+				r.Get("/info", h.GetProjectInfo) // V0.6: git status + instruction files + recent commits
 			})
 		})
 

@@ -2,10 +2,12 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/logos-app/logos/server/internal/projectinfo"
 	"github.com/logos-app/logos/server/internal/store"
 	"github.com/logos-app/logos/server/pkg/protocol"
 )
@@ -92,4 +94,34 @@ func (h *Handler) DeleteProject(w http.ResponseWriter, r *http.Request) {
 	}
 	h.bus.Publish(protocol.EventProjectDeleted, map[string]string{"id": id})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// GetProjectInfo runs the V0.6 surface probe against the project's
+// local_path: git status (branch + dirty count), instruction file
+// detection (AGENTS.md, CLAUDE.md, skill dirs), and recent commits.
+// Always GET-safe (read-only on disk, no shell mutations).
+//
+// 404 when the project doesn't exist OR its local_path no longer
+// resolves to a directory -- the latter is a user-actionable error
+// ("you renamed/deleted the folder; fix the project's path").
+func (h *Handler) GetProjectInfo(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	p, err := h.st.GetProject(id)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "project not found"})
+		return
+	}
+	info, err := projectinfo.Inspect(r.Context(), p.LocalPath)
+	if err != nil {
+		if errors.Is(err, projectinfo.ErrNotADirectory) {
+			writeJSON(w, http.StatusNotFound, map[string]string{
+				"error":      "project path is missing or not a directory",
+				"local_path": p.LocalPath,
+			})
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, info)
 }
