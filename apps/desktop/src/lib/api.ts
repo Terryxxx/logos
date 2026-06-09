@@ -84,14 +84,14 @@ export type Task = {
     | "completed"
     | "failed"
     | "cancelled";
-  result?: string;
-  error?: string;
-  failure_reason?: string;
-  session_id?: string;
-  work_dir?: string;
-  dispatched_at?: string;
-  started_at?: string;
-  completed_at?: string;
+  result: string | null;
+  error: string | null;
+  failure_reason: string | null;
+  session_id: string | null;
+  work_dir: string | null;
+  dispatched_at: string | null;
+  started_at: string | null;
+  completed_at: string | null;
   created_at: string;
 };
 

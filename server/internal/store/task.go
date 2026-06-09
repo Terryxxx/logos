@@ -8,24 +8,20 @@ import (
 )
 
 type Task struct {
-	ID            string         `json:"id"`
-	AgentID       string         `json:"agent_id"`
-	RuntimeID     string         `json:"runtime_id"`
-	IssueID       string         `json:"issue_id"`
-	Status        string         `json:"status"`
-	SessionID     sql.NullString `json:"-"`
-	SessionIDPtr  *string        `json:"session_id,omitempty"`
-	WorkDir       sql.NullString `json:"-"`
-	WorkDirPtr    *string        `json:"work_dir,omitempty"`
-	Result        sql.NullString `json:"-"`
-	ResultPtr     *string        `json:"result,omitempty"`
-	Error         sql.NullString `json:"-"`
-	ErrorPtr      *string        `json:"error,omitempty"`
-	FailureReason sql.NullString `json:"-"`
-	DispatchedAt  sql.NullString `json:"dispatched_at,omitempty"`
-	StartedAt     sql.NullString `json:"started_at,omitempty"`
-	CompletedAt   sql.NullString `json:"completed_at,omitempty"`
-	CreatedAt     string         `json:"created_at"`
+	ID            string     `json:"id"`
+	AgentID       string     `json:"agent_id"`
+	RuntimeID     string     `json:"runtime_id"`
+	IssueID       string     `json:"issue_id"`
+	Status        string     `json:"status"`
+	SessionID     NullString `json:"session_id"`
+	WorkDir       NullString `json:"work_dir"`
+	Result        NullString `json:"result"`
+	Error         NullString `json:"error"`
+	FailureReason NullString `json:"failure_reason"`
+	DispatchedAt  NullString `json:"dispatched_at"`
+	StartedAt     NullString `json:"started_at"`
+	CompletedAt   NullString `json:"completed_at"`
+	CreatedAt     string     `json:"created_at"`
 }
 
 // CreateTask inserts a new row in 'queued'. Caller (TaskService) is responsible
@@ -174,22 +170,6 @@ func scanTask(sc scanner) (*Task, error) {
 		&t.SessionID, &t.WorkDir, &t.Result, &t.Error, &t.FailureReason,
 		&t.DispatchedAt, &t.StartedAt, &t.CompletedAt, &t.CreatedAt); err != nil {
 		return nil, err
-	}
-	if t.SessionID.Valid {
-		v := t.SessionID.String
-		t.SessionIDPtr = &v
-	}
-	if t.WorkDir.Valid {
-		v := t.WorkDir.String
-		t.WorkDirPtr = &v
-	}
-	if t.Result.Valid {
-		v := t.Result.String
-		t.ResultPtr = &v
-	}
-	if t.Error.Valid {
-		v := t.Error.String
-		t.ErrorPtr = &v
 	}
 	return &t, nil
 }

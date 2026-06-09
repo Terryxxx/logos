@@ -1,8 +1,6 @@
 package store
 
 import (
-	"database/sql"
-
 	"github.com/google/uuid"
 )
 

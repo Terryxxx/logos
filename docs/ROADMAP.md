@@ -19,12 +19,12 @@ works end-to-end on the author's machine.
 - [x] Tauri 2 shell + React 18 / Vite / Tailwind frontend
 - [x] Go server (chi + gorilla/websocket) bound to `127.0.0.1`
 - [x] SQLite persistence (pure-Go driver, embedded migrations)
-- [x] Auto-detect Claude Code on PATH at server startup
+- [x] Auto-detect **Claude Code** and **GitHub Copilot CLI** on PATH at server startup
 - [x] Issue CRUD + assign-to-agent (+ auto-enqueue on assign)
 - [x] Agent CRUD bound to a local runtime
 - [x] Task state machine: `queued → dispatched → running →
       completed | failed | cancelled`
-- [x] In-process Runner: polls + claims + spawns Claude + streams output
+- [x] In-process Runner: polls + claims + spawns the agent CLI + streams output
 - [x] WebSocket hub with token auth
 - [x] Localhost token auth (random 256-bit, persisted in `app_settings`)
 - [x] Cross-platform data dir (`%APPDATA%\Logos\` / `~/Library/…/Logos/` /
@@ -34,7 +34,7 @@ works end-to-end on the author's machine.
 ### Explicitly NOT in V0.1
 
 - Skills system, autopilots, chat sessions
-- Multi-provider (only Claude Code)
+- Multi-provider beyond Claude + Copilot (Codex, OpenCode, Gemini, … come in V0.3)
 - Workspaces, members, roles
 - File attachments
 - Markdown rendering of issue descriptions
@@ -51,6 +51,33 @@ works end-to-end on the author's machine.
 | `agent/claude.go` | `--resume` is wired but `service/runner.go` never sets `ResumeID`. Re-attach when V0.2 adds "Run again" on a closed session. |
 | `handler/handler.go` | CORS includes `tauri://localhost` and `http://tauri.localhost`. Confirm both forms with the Tauri 2 webview on Windows + macOS during V0.2 sidecar work. |
 | `realtime/hub.go` | Slow client currently drops frames silently. Add a counter + log warning once we have any kind of metrics. |
+
+### V0.1 hotfixes (post-launch)
+
+Real bugs found within the first day of use and fixed in place. Listed
+here (not in V0.2) because they keep the V0.1 promise honest — without
+them the UI silently mis-rendered nullable fields and issues never
+appeared "done".
+
+- [x] **Add `agent/copilot.go`** (GitHub Copilot CLI as second provider).
+      Validates that the `agent.Backend` interface is general enough one
+      release earlier than ADR-010 planned. See ADR-014.
+- [x] **Fix `sql.NullString` JSON marshaling.** Previously fields like
+      `started_at` / `completed_at` / `failure_reason` round-tripped as
+      `{"String":"...","Valid":true}` objects clients can't consume.
+      Replaced with a `store.NullString` wrapper that marshals to a string
+      or `null`. Frontend `Task` type updated to `string | null`.
+- [x] **Auto-bump issue status on task lifecycle.** `task:running` ->
+      issue `todo → in_progress`; `task:completed` -> issue `→ done`.
+      Never demotes a manually-set `done` or `cancelled` (see
+      `service.canBumpIssue`). Multica defers this to its CLI; we cover
+      the unambiguous happy path until our own CLI exists.
+- [x] **Trim multi-line CLI version strings** in detectors (Copilot
+      prints an "update available" blurb on a second line). Display now
+      shows just the version.
+- [x] **CORS: whitelist both `localhost:PORT` and `127.0.0.1:PORT`** —
+      browsers treat them as distinct origins, Vite binds 127.0.0.1.
+      Documented as Invariant #5 in `docs/ARCHITECTURE.md`.
 
 ---
 

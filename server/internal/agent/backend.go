@@ -75,18 +75,22 @@ func (r *Registry) Get(provider string) (Backend, error) {
 	return b, nil
 }
 
-// RegistryDefault returns the V0.1 default registry (Claude only).
-// Add codex/copilot/etc. here as backends land.
+// RegistryDefault returns the V0.1 default registry.
+// Add more providers (codex, opencode, …) here as backends land.
 func RegistryDefault() *Registry {
 	r := NewRegistry()
 	r.Register(NewClaudeBackend())
+	r.Register(NewCopilotBackend())
 	return r
 }
 
 // DetectAndRegisterAll probes every known provider and upserts an
 // agent_runtime row for each one found. Safe to call repeatedly.
 func DetectAndRegisterAll(ctx context.Context, st *store.Store) error {
-	detectors := []Detector{NewClaudeDetector()}
+	detectors := []Detector{
+		NewClaudeDetector(),
+		NewCopilotDetector(),
+	}
 	var firstErr error
 	for _, d := range detectors {
 		binary, version, ok, err := d.Detect(ctx)

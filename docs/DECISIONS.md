@@ -346,6 +346,51 @@ in one terminal and `pnpm tauri dev` in another.
 
 ---
 
+## ADR-014 · Add GitHub Copilot CLI as second V0.1 provider
+
+**Context.** ADR-010 said "Claude Code only for V0.1". Within 24 h of V0.1
+shipping, the author wanted to use the GitHub Copilot CLI they already had
+installed.
+
+**Decision.** Add `agent/copilot.go` (Detector + Backend) inside V0.1.
+
+**Why.**
+
+- This is exactly the trigger ADR-010 was waiting for: a real user need
+  for a second provider. Adding it now (one new file + one line in the
+  registry) validates that the `agent.Backend` interface is general
+  enough — much earlier than V0.3.
+- Copilot's JSONL output (`--output-format json`) maps cleanly to the
+  unified `Message{Kind, Content, Tool, Input, Output}` shape with a
+  small `switch` over event types. No interface change was needed.
+- Lessons learned that informed the abstraction:
+  - `Backend.Execute` does NOT need a `SystemPrompt` parameter for every
+    provider (Copilot ignores it, reads `AGENTS.md` from cwd instead).
+    Field stays in `ExecOptions` but Copilot backend ignores it; V0.2
+    will write the agent's instructions to `<workdir>/AGENTS.md` before
+    spawn.
+  - Streaming events come in two flavours: `ephemeral` (UI-noise like
+    skill-loaded / message_delta) vs final (assistant.message). Filtering
+    `ephemeral: true` at parse time keeps the message_log clean without
+    losing live progress (the deltas eventually consolidate into the
+    final assistant.message).
+  - Every provider has its own "you must pass this flag in non-interactive
+    mode" gotcha. Claude needs OAuth done in advance; Copilot needs
+    `--allow-all-tools` to skip permission prompts.
+
+**Trade-offs accepted.**
+
+- Slight scope creep on V0.1, but offset by validating the abstraction
+  early.
+- Copilot subscription + auth is a separate prerequisite; the UI will
+  show "completed" with empty output if the user is not signed in.
+
+**Revisit trigger.** Adding the 3rd backend (Codex). At that point, if
+the `switch` blocks in `claude.go` / `copilot.go` / `codex.go` start
+sharing structural patterns, extract them into shared helpers.
+
+---
+
 ## How to add a new ADR
 
 1. Pick the next number (`ADR-XXX`).

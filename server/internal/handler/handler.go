@@ -47,9 +47,11 @@ func NewRouter(h *Handler, hub *realtime.Hub, token string) http.Handler {
 	r.Use(chimw.Recoverer)
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins: []string{
-			"http://localhost:1420",  // Tauri dev (default Vite port for tauri 2)
+			"http://localhost:1420",  // Tauri dev (Vite default for Tauri 2)
+			"http://127.0.0.1:1420",  // Tauri dev (when Vite binds 127.0.0.1)
 			"http://localhost:5173",  // generic Vite
-			"tauri://localhost",      // Tauri prod webview
+			"http://127.0.0.1:5173",  // generic Vite (127.0.0.1)
+			"tauri://localhost",      // Tauri prod webview (macOS/Linux)
 			"http://tauri.localhost", // Tauri prod webview (Windows)
 		},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},

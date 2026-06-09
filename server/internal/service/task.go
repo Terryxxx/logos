@@ -102,6 +102,9 @@ func (s *TaskService) Start(ctx context.Context, taskID string) (*store.Task, er
 		return nil, err
 	}
 	s.bus.Publish(protocol.EventTaskRunning, t)
+	// Auto-bump the issue: todo -> in_progress when the first run starts.
+	// Never demotes a manually-set 'done' or 'cancelled'.
+	s.bumpIssueStatus(ctx, t.IssueID, "in_progress")
 	return t, nil
 }
 
@@ -135,6 +138,10 @@ func (s *TaskService) Complete(ctx context.Context, taskID, result, sessionID, w
 		slog.Warn("reconcile agent status failed", "agent_id", t.AgentID, "error", err)
 	}
 	s.bus.Publish(protocol.EventTaskCompleted, t)
+	// Auto-bump the issue to 'done'. V0.2 will let the agent control issue
+	// status via the multica CLI; until then, "task completed" is the only
+	// signal we have that the work is finished.
+	s.bumpIssueStatus(ctx, t.IssueID, "done")
 	return t, nil
 }
 
@@ -160,6 +167,49 @@ func (s *TaskService) Cancel(ctx context.Context, taskID string) (*store.Task, e
 	}
 	s.bus.Publish(protocol.EventTaskCancelled, t)
 	return t, nil
+}
+
+// bumpIssueStatus forward-transitions an issue's status only when the
+// transition makes sense (todo -> in_progress -> done). Never demotes;
+// never overrides a manually-set 'done' or 'cancelled'. Failures are
+// logged but never propagate -- this is best-effort UX glue, not data
+// integrity.
+//
+// Why: in V0.1 the agent has no way to update issue status itself (the
+// multica-style CLI lands later). Without this, every issue stays at
+// 'todo' forever even after the agent has obviously done the work. We
+// cover the unambiguous happy path here and leave nuanced cases
+// (partial work, blocked, ...) to manual user input.
+func (s *TaskService) bumpIssueStatus(ctx context.Context, issueID, target string) {
+	issue, err := s.st.GetIssue(issueID)
+	if err != nil || issue == nil {
+		return
+	}
+	if !canBumpIssue(issue.Status, target) {
+		return
+	}
+	updated, err := s.st.UpdateIssue(issueID, store.UpdateIssueParams{Status: &target})
+	if err != nil {
+		slog.Warn("bump issue status failed",
+			"issue_id", issueID, "from", issue.Status, "to", target, "error", err)
+		return
+	}
+	s.bus.Publish(protocol.EventIssueUpdated, updated)
+}
+
+func canBumpIssue(current, target string) bool {
+	// Never demote a terminal user choice.
+	if current == "cancelled" || current == "done" {
+		return false
+	}
+	switch target {
+	case "in_progress":
+		return current == "todo"
+	case "done":
+		return current == "todo" || current == "in_progress"
+	default:
+		return false
+	}
 }
 
 // CancellationRegistry tracks per-task context cancel funcs so the

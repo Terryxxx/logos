@@ -160,6 +160,11 @@ Where each transition is implemented:
    graceful SIGTERM so the agent CLI saves its session id. Never `kill -9`.
 4. **WebSocket Hub drops frames on slow clients, never blocks.** One slow
    client must not starve everyone else. See `realtime/hub.go`.
+5. **CORS `AllowedOrigins` must list BOTH `localhost` and `127.0.0.1` for
+   every dev port.** Browsers treat them as distinct origins. The Vite
+   config binds `127.0.0.1` (so Tauri's WebView2 / WKWebView resolves a
+   deterministic host across machines), so the webview origin is
+   `http://127.0.0.1:1420` — easy to miss when adding new ports later.
 
 ## 6. Module dependency graph (Go)
 

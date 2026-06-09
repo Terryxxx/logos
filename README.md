@@ -86,6 +86,30 @@ A localhost auth token is written to `<data-dir>/runtime.json` on every startup;
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | V0.1 done list + V0.2 → V0.6 planning + known TODOs |
 | [`docs/MULTICA_ANALYSIS.md`](docs/MULTICA_ANALYSIS.md) | Reverse-engineered analysis of [multica-ai/multica](https://github.com/multica-ai/multica), our reference implementation |
 
+## Troubleshooting
+
+When something feels wrong (runtime not detected, task stuck queued, UI says
+"server not reachable"), run the diagnostic:
+
+```powershell
+.\scripts\diagnose.ps1
+# or
+make diagnose
+```
+
+It walks 6 checks top-to-bottom (process, port, runtime.json, SQLite,
+HTTP API, PATH). Fix the first failure, re-run, repeat. See
+[`scripts/README.md`](scripts/README.md) for the failure → fix table.
+
+### Common gotchas
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Task stays at `running` forever on the very first run | The agent CLI (e.g. `claude`) has never been logged in. In `-p` (print) mode it silently blocks on stdin waiting for OAuth. | In another terminal, run `claude` (no flags), complete the OAuth flow once, `/exit`. Future tasks will work. |
+| UI says "Logos server not reachable" | Go server isn't running, or it crashed | `cd server && go run ./cmd/logos-server` |
+| UI Runtimes page is empty even though `claude --version` works | The server was started in a terminal whose `PATH` doesn't include the claude binary | Run `.\scripts\diagnose.ps1` — it will identify the mismatch. Restart server from a shell where `claude --version` works. |
+| `CORS policy ... No 'Access-Control-Allow-Origin'` in DevTools | Vite is binding `127.0.0.1`, but server CORS only allows `localhost` (or vice-versa) | Both forms are whitelisted in `server/internal/handler/handler.go`. If you change ports, add both `localhost:PORT` and `127.0.0.1:PORT`. |
+
 ## License
 
 TBD (pick MIT/Apache-2.0 once first commit lands).
