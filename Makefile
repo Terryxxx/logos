@@ -25,3 +25,6 @@ clean: ## Remove build artifacts
 	rm -rf server/bin server/tmp
 	rm -rf apps/desktop/src-tauri/target apps/desktop/src-tauri/binaries
 	rm -rf apps/desktop/dist apps/desktop/node_modules
+
+diagnose: ## Run end-to-end health check (PowerShell)
+	pwsh -NoProfile -File scripts/diagnose.ps1
