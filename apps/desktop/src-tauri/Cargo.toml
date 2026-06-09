@@ -1,0 +1,24 @@
+[package]
+name = "logos-app"
+version = "0.1.0"
+description = "Logos — your AI agents, working as a crew"
+authors = ["Logos"]
+edition = "2021"
+
+# Tauri 2 default layout: lib.rs holds the app, main.rs is a 3-line shim.
+[lib]
+name = "logos_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
