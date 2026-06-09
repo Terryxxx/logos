@@ -4,6 +4,8 @@ import { useState } from "react";
 import { useApi, type Agent, type Issue, type Task } from "../lib/api";
 import { cn, formatRelativeTime } from "../lib/utils";
 import { useWSEvent } from "../lib/ws";
+import { Markdown } from "../lib/markdown";
+import { TaskConversation } from "../components/task-conversation";
 
 const STATUS_LABEL: Record<Issue["status"], string> = {
   todo: "Todo",
@@ -248,7 +250,7 @@ function IssueDetail({ issue, agents }: { issue: Issue; agents: Agent[] }) {
         </div>
         <h1 className="mb-2 text-xl font-semibold">{issue.title}</h1>
         {issue.description ? (
-          <pre className="whitespace-pre-wrap text-sm opacity-80">{issue.description}</pre>
+          <Markdown className="text-sm opacity-80">{issue.description}</Markdown>
         ) : null}
         <div className="mt-4 flex items-center gap-2">
           <select
@@ -299,13 +301,26 @@ function TaskRow({ task }: { task: Task }) {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["issue-tasks", task.issue_id] }),
   });
   const isActive = task.status === "queued" || task.status === "dispatched" || task.status === "running";
+  // Default open for the freshest active task; collapsed once it terminates.
+  const [open, setOpen] = useState(isActive);
   return (
     <li className="rounded border border-border bg-panel p-3 text-sm">
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
+        <button
+          onClick={() => setOpen((v) => !v)}
+          className="flex items-center gap-2 text-left hover:opacity-80"
+        >
+          <span
+            className={cn(
+              "inline-block w-3 text-xs transition-transform",
+              open && "rotate-90",
+            )}
+          >
+            ▸
+          </span>
           <StatusBadge status={task.status} />
           <span className="font-mono text-xs opacity-60">{task.id.slice(0, 8)}</span>
-        </div>
+        </button>
         <div className="flex items-center gap-3 text-xs opacity-60">
           <span>{formatRelativeTime(task.created_at)}</span>
           {isActive && (
@@ -318,15 +333,26 @@ function TaskRow({ task }: { task: Task }) {
           )}
         </div>
       </div>
-      {task.result ? (
-        <pre className="mt-2 whitespace-pre-wrap text-xs opacity-90">{task.result}</pre>
-      ) : null}
-      {task.error ? (
-        <div className="mt-2 text-xs text-danger">
-          {task.failure_reason ? <span className="opacity-70">[{task.failure_reason}] </span> : null}
-          {task.error}
+
+      {open && (
+        <div className="mt-3 space-y-2">
+          <TaskConversation taskId={task.id} />
+          {task.result ? (
+            <details className="rounded border border-border bg-bg/40 px-3 py-2 text-xs">
+              <summary className="cursor-pointer opacity-70">Final result</summary>
+              <Markdown className="mt-2 text-sm">{task.result}</Markdown>
+            </details>
+          ) : null}
+          {task.error ? (
+            <div className="rounded border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger">
+              {task.failure_reason ? (
+                <span className="opacity-70">[{task.failure_reason}] </span>
+              ) : null}
+              {task.error}
+            </div>
+          ) : null}
         </div>
-      ) : null}
+      )}
     </li>
   );
 }

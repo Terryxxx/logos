@@ -86,16 +86,23 @@ appeared "done".
 **Goal:** the app is a single double-clickable binary that someone other
 than the author would actually use. ETA: ~3 weeks after V0.1.
 
-### Must
+### Done
+
+- [x] **Streamed message rendering.** New `TaskConversation` component
+      lazy-loads `/api/tasks/:id/messages` and subscribes to
+      `task:message` WS events to append in real time. Renders `text`
+      (Markdown via react-markdown + remark-gfm), `tool_use` (folded
+      JSON input), `tool_result` (folded stdout), and `status` /
+      `log` / `error` lines distinctly. Auto-scrolls to bottom only
+      when the user is already at the bottom. Markdown also applied
+      to issue descriptions and the per-task "Final result" panel.
+
+### Must (remaining)
 
 - [ ] **Tauri sidecar integration.** Bundle `logos-server-<TRIPLE>` into
       `src-tauri/binaries/`; spawn it in `lib.rs:run()`; capture stderr
       to a log file. Server picks a random free port and writes
       `runtime.json` exactly as today.
-- [ ] **Streamed message rendering.** New `IssueDetailPage` lazy-loads
-      `/api/tasks/:id/messages` and subscribes to `task:message` WS
-      events to append in real time. Render `text`, `tool_use`,
-      `tool_result` distinctly (think a chat-like list).
 - [ ] **Per-task workspace directory.** `<data-dir>/workspaces/<task_id>/`
       created before spawn; passed as `cwd` to the agent CLI; GC'd 24 h
       after task terminates (Multica-style `.gc_meta.json` marker).

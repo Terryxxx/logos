@@ -12,13 +12,11 @@ class WSClient {
   private ws: WebSocket | null = null;
   private handlers = new Set<Handler>();
   private url: string;
-  private token: string;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private closed = false;
 
   constructor(httpUrl: string, token: string) {
     this.url = httpUrl.replace(/^http/, "ws") + "/ws?token=" + encodeURIComponent(token);
-    this.token = token;
     this.connect();
   }
 

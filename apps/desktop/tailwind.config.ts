@@ -11,6 +11,7 @@ export default {
         muted: "#8a93a6",
         text: "#e6e9ef",
         accent: "#a6c1ff",
+        warn: "#f0b466",
         success: "#7ee787",
         danger: "#ff7b72",
       },

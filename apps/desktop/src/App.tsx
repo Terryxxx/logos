@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Inbox, Bot, Cpu } from "lucide-react";
+import { Inbox, Bot, Cpu, type LucideIcon } from "lucide-react";
 
 import { cn } from "./lib/utils";
 import { IssuesPage } from "./pages/IssuesPage";
@@ -8,7 +8,7 @@ import { RuntimesPage } from "./pages/RuntimesPage";
 
 type PageKey = "issues" | "agents" | "runtimes";
 
-const NAV: { key: PageKey; label: string; icon: React.ComponentType<{ size?: number }> }[] = [
+const NAV: { key: PageKey; label: string; icon: LucideIcon }[] = [
   { key: "issues", label: "Issues", icon: Inbox },
   { key: "agents", label: "Agents", icon: Bot },
   { key: "runtimes", label: "Runtimes", icon: Cpu },
