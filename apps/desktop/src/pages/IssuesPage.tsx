@@ -404,7 +404,7 @@ function IssueDetail({
             />
             <div className="rounded border border-accent/20 bg-accent/5 px-2 py-1 text-[11px] text-accent/80">
               💡 Agent runs in <code className="font-mono">{project.local_path}</code> — it can read and modify files there.
-              <code className="font-mono">AGENTS.md</code> / <code className="font-mono">CLAUDE.md</code> at this path are loaded automatically.
+              {" "}<code className="font-mono">AGENTS.md</code> / <code className="font-mono">CLAUDE.md</code> at this path are loaded automatically.
             </div>
           </div>
         ) : null}
