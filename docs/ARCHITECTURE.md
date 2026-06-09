@@ -31,23 +31,31 @@ processes** on the user's machine:
 │  ┌────────────────────────▼───────────────────────────────┐  │
 │  │  Rust main process (src-tauri/src/lib.rs)              │  │
 │  │  - Owns the window                                     │  │
-│  │  - Reads <data-dir>/runtime.json (port + token)        │  │
-│  │  - Will spawn the Go sidecar in V0.2 (V0.1: separate)  │  │
+│  │  - Spawns the Go sidecar on setup                      │  │
+│  │  - Polls runtime.json until server writes it,          │  │
+│  │    returns port + token to the WebView                 │  │
+│  │  - Kills the sidecar on app exit                       │  │
+│  └────────────────────────┬───────────────────────────────┘  │
+│                           │ tauri-plugin-shell sidecar()     │
+│  ┌────────────────────────▼───────────────────────────────┐  │
+│  │  logos-server-<TRIPLE>(.exe) (Go sidecar binary)       │  │
+│  │  bundled via src-tauri/binaries/ + bundle.externalBin  │  │
+│  │  - chi router + gorilla/websocket                      │  │
+│  │  - SQLite (modernc.org/sqlite, pure-Go)                │  │
+│  │  - In-process Runner spawns claude/copilot/...         │  │
+│  │  - Writes runtime.json on every startup                │  │
 │  └────────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────────┘
                             ▲
                             │ HTTP + WebSocket (127.0.0.1:7878)
                             ▼
-┌──────────────────────────────────────────────────────────────┐
-│  logos-server  (Go, single binary)                           │
-│  - chi router + gorilla/websocket                            │
-│  - SQLite (modernc.org/sqlite, pure-Go)                      │
-│  - In-process Runner spawns claude/codex/...                 │
-│  - Writes runtime.json on every startup                      │
-└──────────────────────────────────────────────────────────────┘
+                    the WebView, same app
+
+      Set LOGOS_SIDECAR=off to skip the spawn and let `go run` from
+      another terminal claim the port (Go dev hot-reload workflow).
                             │
                             ▼ subprocess
-                  claude  /  codex  /  ...
+                  claude  /  copilot  /  ...
 ```
 
 ### Why two processes, not one?

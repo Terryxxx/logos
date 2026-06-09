@@ -1,17 +1,33 @@
 //! Logos Tauri shell.
 //!
 //! Responsibilities:
-//!   1. Locate the per-user data dir (OS-conventional) so we can find the
-//!      `runtime.json` file the Go server writes on every startup.
-//!   2. Expose a `get_runtime_config` command the React UI calls on mount
-//!      to receive { url, token }.
+//!   1. Spawn `logos-server` (Go) as a sidecar process. Lifetime is bound
+//!      to the app; killed on exit.
+//!   2. Wait for the server to write `<data-dir>/runtime.json`, then
+//!      hand the URL+token to the React UI via the `get_runtime_config`
+//!      command.
+//!   3. Forward server stdout/stderr to the Tauri console for debugging.
 //!
-//! V0.1 deliberately does NOT auto-spawn the Go server — the developer
-//! runs `go run ./cmd/logos-server` in a second terminal. Sidecar
-//! integration (production bundling) lands in V0.2.
+//! Bypass mode: setting `LOGOS_SIDECAR=off` in the environment skips the
+//! spawn and lets the user run `go run ./cmd/logos-server` in another
+//! terminal -- handy when hacking on the Go side with `go run`'s hot
+//! re-compile, since the bundled sidecar is incrementally rebuilt by
+//! `scripts/bundle-sidecar.mjs` but never live-reloaded.
+
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::Mutex,
+    thread,
+    time::{Duration, Instant},
+};
 
 use serde::Serialize;
-use std::{fs, path::PathBuf};
+use tauri::Manager;
+use tauri_plugin_shell::{
+    process::{CommandChild, CommandEvent},
+    ShellExt,
+};
 
 #[derive(Debug, Serialize)]
 pub struct RuntimeConfig {
@@ -31,8 +47,13 @@ impl From<String> for CommandError {
     }
 }
 
+/// SidecarState owns the spawned Go server's process handle so the
+/// app's RunEvent::ExitRequested hook can kill it.
+struct SidecarState {
+    child: Mutex<Option<CommandChild>>,
+}
+
 fn data_dir() -> Result<PathBuf, String> {
-    // Cross-platform OS-conventional data dir, mirroring config.resolveDataDir in Go.
     if cfg!(target_os = "windows") {
         let base = std::env::var("APPDATA").map_err(|_| "APPDATA not set".to_string())?;
         Ok(PathBuf::from(base).join("Logos"))
@@ -51,16 +72,8 @@ fn data_dir() -> Result<PathBuf, String> {
     }
 }
 
-#[tauri::command]
-fn get_runtime_config() -> Result<RuntimeConfig, CommandError> {
-    let path = data_dir()?.join("runtime.json");
-    let raw = fs::read_to_string(&path).map_err(|e| {
-        format!(
-            "could not read {} — start the Logos server first (run `go run ./cmd/logos-server` in /server). os: {}",
-            path.display(),
-            e
-        )
-    })?;
+fn read_runtime(path: &Path) -> Result<RuntimeConfig, String> {
+    let raw = fs::read_to_string(path).map_err(|e| e.to_string())?;
     let v: serde_json::Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
     let addr = v
         .get("addr")
@@ -80,11 +93,111 @@ fn get_runtime_config() -> Result<RuntimeConfig, CommandError> {
     })
 }
 
+/// Polls runtime.json for up to ~10s. The sidecar typically writes it
+/// within 100-500 ms on warm starts, but a cold modernc-sqlite init on
+/// first launch can take a couple seconds.
+#[tauri::command]
+fn get_runtime_config() -> Result<RuntimeConfig, CommandError> {
+    let path = data_dir()?.join("runtime.json");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut last_err = String::new();
+    while Instant::now() < deadline {
+        match read_runtime(&path) {
+            Ok(cfg) => return Ok(cfg),
+            Err(e) => last_err = e,
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    Err(format!(
+        "timed out waiting for {} (last error: {}). \
+         If you set LOGOS_SIDECAR=off, start the server in another terminal: \
+         cd server && go run ./cmd/logos-server",
+        path.display(),
+        last_err
+    )
+    .into())
+}
+
+fn sidecar_disabled() -> bool {
+    std::env::var("LOGOS_SIDECAR")
+        .map(|v| matches!(v.to_ascii_lowercase().as_str(), "off" | "0" | "false" | "no"))
+        .unwrap_or(false)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .manage(SidecarState {
+            child: Mutex::new(None),
+        })
+        .setup(|app| {
+            if sidecar_disabled() {
+                eprintln!(
+                    "[logos] LOGOS_SIDECAR=off; skipping sidecar. \
+                     Run `go run ./cmd/logos-server` in another terminal."
+                );
+                return Ok(());
+            }
+
+            // Wipe any stale runtime.json so we never hand the UI a port
+            // pointing at a server that died on the previous run.
+            if let Ok(dir) = data_dir() {
+                let rt = dir.join("runtime.json");
+                if rt.exists() {
+                    let _ = fs::remove_file(&rt);
+                }
+            }
+
+            let sidecar = app
+                .shell()
+                .sidecar("logos-server")
+                .map_err(|e| format!("locate sidecar: {e}"))?;
+
+            let (mut rx, child) = sidecar
+                .spawn()
+                .map_err(|e| format!("spawn sidecar: {e}"))?;
+
+            eprintln!("[logos] sidecar spawned (pid={})", child.pid());
+            *app.state::<SidecarState>().child.lock().unwrap() = Some(child);
+
+            // Forward server output. The server already prefixes its lines
+            // with slog timestamps, so we don't add anything except the
+            // [server] tag to distinguish from Tauri's own messages.
+            tauri::async_runtime::spawn(async move {
+                while let Some(event) = rx.recv().await {
+                    match event {
+                        CommandEvent::Stdout(line) | CommandEvent::Stderr(line) => {
+                            eprintln!("[server] {}", String::from_utf8_lossy(&line).trim_end());
+                        }
+                        CommandEvent::Error(e) => {
+                            eprintln!("[server] error: {e}");
+                        }
+                        CommandEvent::Terminated(payload) => {
+                            eprintln!(
+                                "[server] exited (code={:?}, signal={:?})",
+                                payload.code, payload.signal
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+            });
+
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![get_runtime_config])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|handle, event| {
+        if let tauri::RunEvent::ExitRequested { .. } = event {
+            if let Some(state) = handle.try_state::<SidecarState>() {
+                if let Some(child) = state.child.lock().unwrap().take() {
+                    eprintln!("[logos] killing sidecar (pid={})", child.pid());
+                    let _ = child.kill();
+                }
+            }
+        }
+    });
 }

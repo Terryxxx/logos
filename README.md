@@ -17,11 +17,11 @@ Logos is a single-machine desktop app that turns coding agents (Claude Code, Cod
 │                 │ HTTP + WebSocket             │
 │                 │ (127.0.0.1:7878)             │
 │  ┌──────────────▼─────────────────────────┐    │
-│  │  Go server (sidecar binary)            │    │
+│  │  Go server (sidecar binary, auto-spawn)│    │
 │  │  - chi router + gorilla/websocket      │    │
 │  │  - SQLite (pure-Go driver)             │    │
 │  │  - Task state machine                  │    │
-│  │  - Spawns claude/codex subprocesses    │    │
+│  │  - Spawns claude/copilot subprocesses  │    │
 │  └────────────────────────────────────────┘    │
 └────────────────────────────────────────────────┘
 ```
@@ -39,7 +39,7 @@ Zero deployment, zero accounts, zero cloud. Data lives at:
 | UI | React 18 + Vite + TypeScript + Tailwind + shadcn/ui |
 | Local server | Go 1.22+ (chi, gorilla/websocket, modernc.org/sqlite) |
 | Database | SQLite (file, no server) |
-| Agent backends | Claude Code (V0.1), more in V0.2 |
+| Agent backends | Claude Code + GitHub Copilot CLI (V0.1+V0.2) |
 
 ## Prerequisites
 
@@ -50,22 +50,36 @@ Zero deployment, zero accounts, zero cloud. Data lives at:
 
 ## Development
 
-Two terminals during V0.1 development (sidecar wiring happens at packaging time):
+**One command** (V0.3+):
 
 ```bash
-# Terminal 1 — run the Go server
+cd apps/desktop
+pnpm install            # first time only
+pnpm tauri:dev          # bundles Go sidecar, then starts the app
+```
+
+`pnpm tauri:dev` runs `scripts/bundle-sidecar.mjs` first, which compiles
+the Go server to `src-tauri/binaries/logos-server-<HOST_TRIPLE>(.exe)`
+incrementally — subsequent runs with no Go changes finish in <100 ms.
+Then Tauri starts the Rust shell, which spawns the sidecar, waits for
+`runtime.json`, and hands the URL+token to the WebView.
+
+### Hacking on the Go server
+
+The sidecar binary is built once per Go-source change and is NOT
+hot-reloaded. If you're iterating on the server, use bypass mode:
+
+```bash
+# Terminal 1 — server with `go run` hot recompile
 cd server
 go run ./cmd/logos-server
 
-# Terminal 2 — run the Tauri dev shell (loads Vite + WebView)
+# Terminal 2 — Tauri without spawning its own sidecar
 cd apps/desktop
-pnpm install
-pnpm tauri dev
+$env:LOGOS_SIDECAR="off"  # PowerShell
+# export LOGOS_SIDECAR=off  # bash/zsh
+pnpm tauri:dev
 ```
-
-The server picks up `LOGOS_PORT` (default `7878`) and `LOGOS_DATA_DIR` (default OS-standard app dir).
-
-A localhost auth token is written to `<data-dir>/runtime.json` on every startup; the Tauri main process reads it and injects it into the webview as `window.__LOGOS__.token`.
 
 ## V0.1 scope
 

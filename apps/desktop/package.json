@@ -7,9 +7,10 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
+    "bundle-sidecar": "node scripts/bundle-sidecar.mjs",
     "tauri": "tauri",
-    "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:dev": "pnpm bundle-sidecar && node scripts/tauri-dev.mjs",
+    "tauri:build": "pnpm bundle-sidecar && tauri build"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.62.0",

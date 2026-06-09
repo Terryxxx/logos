@@ -391,6 +391,66 @@ sharing structural patterns, extract them into shared helpers.
 
 ---
 
+## ADR-015 · Bundle Go server as Tauri sidecar (over a separate daemon process)
+
+**Context.** Through V0.2 the dev/user experience required two terminals:
+one for `go run ./cmd/logos-server`, one for `pnpm tauri dev`. To ship
+Logos as something a non-developer can use, the app has to be one
+double-clickable bundle.
+
+**Decision.** Use Tauri 2's sidecar mechanism (`tauri-plugin-shell` +
+`bundle.externalBin`) to ship the Go binary inside the Tauri app bundle
+and spawn it from Rust at startup.
+
+**How it lands.**
+
+- A Node script (`scripts/bundle-sidecar.mjs`) detects the host triple
+  via `rustc -vV`, runs `go build` with that target, and drops the
+  binary at `apps/desktop/src-tauri/binaries/logos-server-<TRIPLE>(.exe)`.
+- `tauri.conf.json:bundle.externalBin: ["binaries/logos-server"]` makes
+  Tauri include it in the installer.
+- `lib.rs:run()` uses `app.shell().sidecar("logos-server").spawn()` in
+  the setup hook. The returned `CommandChild` is stored in app state.
+- `RunEvent::ExitRequested` calls `child.kill()` for a clean shutdown.
+- `get_runtime_config` polls `runtime.json` for up to 10 s instead of
+  reading once, since the sidecar takes a few hundred ms to bind, init
+  SQLite, run migrations, and write the file.
+
+**Why.**
+
+- "One installer, double-click" is non-negotiable for a desktop product.
+  Asking users to run two terminals fails the smell test.
+- Tauri 2 sidecar is first-class: one config key, one Rust call, one
+  build script. No subprocess-management library needed.
+- The bypass `LOGOS_SIDECAR=off` keeps the Go dev loop fast: the
+  bundled sidecar is incrementally rebuilt by `bundle-sidecar.mjs` but
+  is NOT hot-reloaded, so when iterating on Go code the developer still
+  wants `go run`'s freshness. Tauri then skips the spawn and the
+  user-launched server claims port 7878 first.
+
+**Trade-offs accepted.**
+
+- `pnpm tauri dev` (without `:dev`) no longer works out of the box --
+  Tauri-cli validates `externalBin` paths at startup. README now points
+  users at `pnpm tauri:dev` explicitly.
+- The Go binary is built per host triple. Cross-platform releases will
+  need CI to build for each (linux-musl, macos-aarch64, …). Acceptable
+  for V0.3 single-developer use.
+- Stale-`runtime.json` problem: a crashed sidecar leaves a runtime.json
+  pointing at a defunct port. Mitigation: the setup hook deletes
+  runtime.json before spawn, so a fresh server always wins.
+- Per-task workdir not yet plumbed (V0.4); the bundled server still
+  picks the same cwd as its parent (the Tauri app). Worse than `go run`
+  from the repo root, but symmetric with how every other desktop app
+  works.
+
+**Revisit trigger.** Team mode (V0.6) re-introduces a separate daemon
+process that talks to a hosted server, exactly as Multica does today.
+The sidecar then becomes "the daemon, for single-user mode" rather
+than "the everything".
+
+---
+
 ## How to add a new ADR
 
 1. Pick the next number (`ADR-XXX`).

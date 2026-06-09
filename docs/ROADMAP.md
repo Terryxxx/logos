@@ -30,6 +30,11 @@ works end-to-end on the author's machine.
 - [x] Cross-platform data dir (`%APPDATA%\Logos\` / `~/Library/…/Logos/` /
       `~/.local/share/Logos/`)
 - [x] Cancel task from UI
+- [x] **(V0.3) Tauri sidecar integration.** `pnpm tauri:dev` bundles
+      the Go server into `src-tauri/binaries/logos-server-<TRIPLE>(.exe)`,
+      Rust spawns it on startup, kills it on exit, and forwards
+      stdout/stderr to the Tauri console. Set `LOGOS_SIDECAR=off` to
+      bypass for `go run` hot-reload workflows.
 
 ### Explicitly NOT in V0.1
 
@@ -99,10 +104,6 @@ than the author would actually use. ETA: ~3 weeks after V0.1.
 
 ### Must (remaining)
 
-- [ ] **Tauri sidecar integration.** Bundle `logos-server-<TRIPLE>` into
-      `src-tauri/binaries/`; spawn it in `lib.rs:run()`; capture stderr
-      to a log file. Server picks a random free port and writes
-      `runtime.json` exactly as today.
 - [ ] **Per-task workspace directory.** `<data-dir>/workspaces/<task_id>/`
       created before spawn; passed as `cwd` to the agent CLI; GC'd 24 h
       after task terminates (Multica-style `.gc_meta.json` marker).
