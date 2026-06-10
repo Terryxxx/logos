@@ -19,6 +19,7 @@ import (
 type Runner struct {
 	st       *store.Store
 	tasks    *TaskService
+	comments *CommentService // V0.7: post agent result + read trigger comment
 	registry *agent.Registry
 
 	// workspacesRoot is the absolute path under which per-task working
@@ -33,10 +34,11 @@ type Runner struct {
 	done chan struct{}
 }
 
-func NewRunner(st *store.Store, tasks *TaskService, registry *agent.Registry, workspacesRoot string) *Runner {
+func NewRunner(st *store.Store, tasks *TaskService, comments *CommentService, registry *agent.Registry, workspacesRoot string) *Runner {
 	return &Runner{
 		st:             st,
 		tasks:          tasks,
+		comments:       comments,
 		registry:       registry,
 		workspacesRoot: workspacesRoot,
 		cancels:        NewCancellationRegistry(),
@@ -197,7 +199,23 @@ func (r *Runner) executeTask(parent context.Context, a store.Agent, task store.T
 		return
 	}
 
-	prompt := buildPrompt(issue.Title, issue.Description)
+	// V0.7: if this task was triggered by a comment, the comment body is
+	// the prompt -- not the issue title+description re-sent. Falls back
+	// to the issue-derived prompt when the trigger is missing or the
+	// comment was deleted between enqueue and execute.
+	var prompt string
+	if task.TriggerCommentID.Valid {
+		if c, cerr := r.st.GetComment(task.TriggerCommentID.String); cerr == nil && c != nil {
+			prompt = c.Body
+			taskLog.Info("using comment body as prompt", "comment_id", c.ID[:8])
+		} else {
+			taskLog.Warn("trigger_comment_id set but comment not found; falling back to issue prompt",
+				"comment_id", task.TriggerCommentID.String, "error", cerr)
+		}
+	}
+	if prompt == "" {
+		prompt = buildPrompt(issue.Title, issue.Description)
+	}
 	opts := agent.ExecOptions{
 		WorkDir:      workDir,
 		SystemPrompt: a.Instructions,
@@ -246,6 +264,13 @@ func (r *Runner) executeTask(parent context.Context, a store.Agent, task store.T
 	switch result.Status {
 	case "completed":
 		_, _ = r.tasks.Complete(parent, task.ID, result.Output, result.SessionID, finalWorkDir)
+		// V0.7: surface the agent's final result as an agent-authored
+		// comment so the issue thread shows it inline (replaces the
+		// "scroll to the latest task card to see the answer" affordance).
+		// No-op when result.Output is empty.
+		if r.comments != nil {
+			r.comments.PostAgent(task.IssueID, a.ID, result.Output)
+		}
 	default:
 		reason := "agent_error"
 		if runCtx.Err() != nil {

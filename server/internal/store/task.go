@@ -30,16 +30,30 @@ type Task struct {
 	DiffAdditions    NullInt    `json:"diff_additions"`
 	DiffDeletions    NullInt    `json:"diff_deletions"`
 	DiffChangedFiles NullInt    `json:"diff_changed_files"`
+
+	// V0.7 -- the comment that caused this task to be enqueued. NULL
+	// for tasks created via "Run again" or initial issue-assign. When
+	// set, the runner uses the comment body as the prompt instead of
+	// the issue title+description.
+	TriggerCommentID NullString `json:"trigger_comment_id"`
 }
 
 // CreateTask inserts a new row in 'queued'. Caller (TaskService) is responsible
 // for emitting the protocol.EventTaskQueued event AFTER this returns.
 func (s *Store) CreateTask(agentID, runtimeID, issueID string) (*Task, error) {
+	return s.CreateTaskWithTrigger(agentID, runtimeID, issueID, "")
+}
+
+// CreateTaskWithTrigger is the V0.7 variant: links the new task to the
+// comment that woke it. Empty triggerCommentID is the V0.6 behaviour
+// (Run again / initial assign). The runner reads this column to swap
+// the prompt source from issue title+description to the comment body.
+func (s *Store) CreateTaskWithTrigger(agentID, runtimeID, issueID, triggerCommentID string) (*Task, error) {
 	id := uuid.NewString()
 	_, err := s.db.Exec(`
-		INSERT INTO agent_task_queue (id, agent_id, runtime_id, issue_id)
-		VALUES (?, ?, ?, ?)
-	`, id, agentID, runtimeID, issueID)
+		INSERT INTO agent_task_queue (id, agent_id, runtime_id, issue_id, trigger_comment_id)
+		VALUES (?, ?, ?, ?, ?)
+	`, id, agentID, runtimeID, issueID, nullStr(triggerCommentID))
 	if err != nil {
 		return nil, err
 	}
@@ -210,7 +224,7 @@ func nullStr(s string) any {
 	return s
 }
 
-const taskCols = `id, agent_id, runtime_id, issue_id, status, session_id, work_dir, result, error, failure_reason, dispatched_at, started_at, completed_at, created_at, pre_ref, post_ref, diff_additions, diff_deletions, diff_changed_files`
+const taskCols = `id, agent_id, runtime_id, issue_id, status, session_id, work_dir, result, error, failure_reason, dispatched_at, started_at, completed_at, created_at, pre_ref, post_ref, diff_additions, diff_deletions, diff_changed_files, trigger_comment_id`
 const taskSelect = `SELECT ` + taskCols + ` FROM agent_task_queue`
 
 func scanTask(sc scanner) (*Task, error) {
@@ -219,7 +233,8 @@ func scanTask(sc scanner) (*Task, error) {
 		&t.SessionID, &t.WorkDir, &t.Result, &t.Error, &t.FailureReason,
 		&t.DispatchedAt, &t.StartedAt, &t.CompletedAt, &t.CreatedAt,
 		&t.PreRef, &t.PostRef,
-		&t.DiffAdditions, &t.DiffDeletions, &t.DiffChangedFiles); err != nil {
+		&t.DiffAdditions, &t.DiffDeletions, &t.DiffChangedFiles,
+		&t.TriggerCommentID); err != nil {
 		return nil, err
 	}
 	return &t, nil

@@ -44,6 +44,18 @@ func (s *TaskService) signalWakeup() {
 // EnqueueForIssue creates a queued task for the issue's current assignee.
 // Returns nil, nil when the issue has no assignee (caller decides if that's an error).
 func (s *TaskService) EnqueueForIssue(ctx context.Context, issueID string) (*store.Task, error) {
+	return s.enqueueForIssue(ctx, issueID, "")
+}
+
+// EnqueueFromComment is V0.7's variant: links the new task to the comment
+// that woke it via agent_task_queue.trigger_comment_id. The runner reads
+// that column to swap the prompt source from issue title+description to
+// the comment body. Same nil-on-no-assignee semantics as EnqueueForIssue.
+func (s *TaskService) EnqueueFromComment(ctx context.Context, issueID, commentID string) (*store.Task, error) {
+	return s.enqueueForIssue(ctx, issueID, commentID)
+}
+
+func (s *TaskService) enqueueForIssue(ctx context.Context, issueID, triggerCommentID string) (*store.Task, error) {
 	issue, err := s.st.GetIssue(issueID)
 	if err != nil {
 		return nil, err
@@ -56,7 +68,7 @@ func (s *TaskService) EnqueueForIssue(ctx context.Context, issueID string) (*sto
 		return nil, err
 	}
 
-	task, err := s.st.CreateTask(agent.ID, agent.RuntimeID, issue.ID)
+	task, err := s.st.CreateTaskWithTrigger(agent.ID, agent.RuntimeID, issue.ID, triggerCommentID)
 	if err != nil {
 		return nil, err
 	}

@@ -24,13 +24,14 @@ import (
 type Handler struct {
 	st       *store.Store
 	tasks    *service.TaskService
+	comments *service.CommentService // V0.7
 	bus      *events.Bus
 	token    string
 	runner   *service.Runner // optional; set by NewRouter for /cancel hook
 }
 
-func New(st *store.Store, tasks *service.TaskService, bus *events.Bus, token string) *Handler {
-	return &Handler{st: st, tasks: tasks, bus: bus, token: token}
+func New(st *store.Store, tasks *service.TaskService, comments *service.CommentService, bus *events.Bus, token string) *Handler {
+	return &Handler{st: st, tasks: tasks, comments: comments, bus: bus, token: token}
 }
 
 // SetRunner is called by NewRouter so the /cancel endpoint can interrupt
@@ -90,7 +91,18 @@ func NewRouter(h *Handler, hub *realtime.Hub, token string) http.Handler {
 				r.Delete("/", h.DeleteIssue)
 				r.Get("/tasks", h.ListTasksByIssue)
 				r.Post("/run", h.RunIssue) // explicit "(re-)enqueue task for assignee"
+
+				// V0.7: comments live under their issue. Listing is
+				// chronological; posting a member comment auto-enqueues
+				// a task when the issue has an assignee.
+				r.Get("/comments", h.ListComments)
+				r.Post("/comments", h.PostComment)
 			})
+		})
+
+		r.Route("/api/comments/{id}", func(r chi.Router) {
+			r.Patch("/", h.UpdateComment)
+			r.Delete("/", h.DeleteComment)
 		})
 
 		r.Route("/api/projects", func(r chi.Router) {

@@ -29,4 +29,12 @@ const (
 	EventTaskCompleted = "task:completed"
 	EventTaskFailed    = "task:failed"
 	EventTaskCancelled = "task:cancelled"
+
+	// Comment events (V0.7).
+	// EventCommentCreated fires for any author_type (member, agent,
+	// system). Frontend invalidates the issue's comment list query.
+	// EventCommentUpdated covers body edits AND resolved flips.
+	EventCommentCreated = "comment:created"
+	EventCommentUpdated = "comment:updated"
+	EventCommentDeleted = "comment:deleted"
 )

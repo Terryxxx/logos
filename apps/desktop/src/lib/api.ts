@@ -112,6 +112,38 @@ export type Task = {
   diff_additions: number | null;
   diff_deletions: number | null;
   diff_changed_files: number | null;
+
+  // V0.7: the comment that woke this task. NULL for "Run again" /
+  // initial-assign tasks. Lets the UI render a "↳ in reply to" chip
+  // that scrolls to the source comment.
+  trigger_comment_id: string | null;
+};
+
+// V0.7: a row in the issue thread. The same shape covers human-written
+// comments, agent final-result echoes, and (in V0.8) system handoff
+// rows. `author_id` semantics depend on author_type:
+//   - member: placeholder "me" (V0.x single-user)
+//   - agent:  agent.id
+//   - system: task.id (for task-lifecycle messages) or other context id
+export type Comment = {
+  id: string;
+  issue_id: string;
+  parent_comment_id: string | null;
+  author_type: "member" | "agent" | "system";
+  author_id: string;
+  body: string;
+  created_at: string;
+  updated_at: string;
+  resolved_at: string | null;
+};
+
+// PostCommentResult: server returns the new comment plus, when the
+// issue has an assignee, the auto-enqueued task. Task is undefined
+// when there's no assignee OR the enqueue failed (server logs the
+// reason; client falls back to "Run again").
+export type PostCommentResult = {
+  comment: Comment;
+  task?: Task;
 };
 
 // V0.6: GET /api/projects/:id/info response. Snapshot of git state +

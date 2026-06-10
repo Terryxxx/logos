@@ -7,6 +7,7 @@ import { useWSEvent } from "../lib/ws";
 import { Markdown } from "../lib/markdown";
 import { TaskConversation } from "../components/task-conversation";
 import { DiffStatChip, ProjectInfoPanel } from "../components/project-info";
+import { IssueThread } from "../components/issue-thread";
 
 const STATUS_LABEL: Record<Issue["status"], string> = {
   todo: "Todo",
@@ -410,32 +411,28 @@ function IssueDetail({
         ) : null}
       </div>
 
-      <div className="flex-1 overflow-auto p-6">
-        <div className="mb-3 text-xs uppercase tracking-wide opacity-50">Task runs</div>
-        {tasksQ.isLoading ? (
-          <div className="text-sm opacity-60">Loading…</div>
-        ) : tasks.length === 0 ? (
-          <div className="text-sm opacity-60">No runs yet.</div>
-        ) : (
-          <ul className="space-y-2">
-            {tasks.map((t) => {
-              // Resume detection: a task is "resumed from a prior run"
-              // when its session_id matches another EARLIER task on the
-              // same issue+agent. The server's GetLastSessionForIssueAgent
-              // hands back exactly that id, so if we see it again here, the
-              // agent CLI continued that session via --resume.
-              const isResumed =
-                !!t.session_id &&
-                tasks.some(
-                  (other) =>
-                    other.id !== t.id &&
-                    other.session_id === t.session_id &&
-                    other.created_at < t.created_at,
-                );
-              return <TaskRow key={t.id} task={t} isResumed={isResumed} />;
-            })}
-          </ul>
-        )}
+      <div className="flex-1 overflow-hidden">
+        <IssueThread
+          issueId={issue.id}
+          hasAssignee={!!issue.assignee_agent_id}
+          agents={agents}
+          renderTaskCard={(t) => {
+            // Resume detection: a task is "resumed from a prior run"
+            // when its session_id matches another EARLIER task on the
+            // same issue+agent. The server's GetLastSessionForIssueAgent
+            // hands back exactly that id, so if we see it again here, the
+            // agent CLI continued that session via --resume.
+            const isResumed =
+              !!t.session_id &&
+              tasks.some(
+                (other) =>
+                  other.id !== t.id &&
+                  other.session_id === t.session_id &&
+                  other.created_at < t.created_at,
+              );
+            return <TaskRow task={t} isResumed={isResumed} />;
+          }}
+        />
       </div>
     </div>
   );
@@ -474,6 +471,14 @@ function TaskRow({ task, isResumed }: { task: Task; isResumed: boolean }) {
               className="rounded border border-accent/40 bg-accent/10 px-1.5 py-0.5 text-[9px] font-mono text-accent"
             >
               ↻ resumed
+            </span>
+          ) : null}
+          {task.trigger_comment_id ? (
+            <span
+              title="Triggered by a comment in the thread above"
+              className="rounded border border-border bg-bg/60 px-1.5 py-0.5 text-[9px] opacity-70"
+            >
+              ↳ reply
             </span>
           ) : null}
           {/* V0.6: project-mode diff stat chip — null-safe; sandbox tasks render nothing. */}

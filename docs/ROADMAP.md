@@ -23,7 +23,50 @@ log for past versions.
 Listed by version, newest first. Each item shipped to `main` and is
 verified end-to-end on Windows.
 
-### V0.6 -- Project-aware UX (current)
+### V0.7 -- Comments + multi-turn (current)
+
+- [x] **`comment` table** (migration `004_comments.sql`). Schema
+      ported from Multica's `001_init` + `017_comment_parent_id` +
+      `018_comment_parent_cascade` + `069_comment_resolved_at` +
+      `107_comment_system_author` -- one file because we start fresh.
+      Threading via `parent_comment_id` (ON DELETE CASCADE so deleting
+      a parent removes the subtree); `resolved_at NULL` for hiding
+      closed threads; `author_type` enum `'member' | 'agent' | 'system'`
+      with `'system'` reserved for V0.8 squad-leader handoffs.
+      Indices: `(issue_id, created_at)` for the thread feed,
+      `parent_comment_id` for reply lookup, plus a partial index on
+      `issue_id WHERE resolved_at IS NULL` for open-only views.
+- [x] **`agent_task_queue.trigger_comment_id`** -- the comment that
+      caused this task to be enqueued. When set, the runner uses the
+      comment body as the prompt instead of issue title+description.
+      `↳ reply` chip on the task card surfaces the linkage.
+- [x] **`CommentService`** with three creation paths:
+      `PostMember` (auto-enqueues a task when the issue has an
+      assignee), `PostAgent` (called by the runner on task completion
+      to surface the agent's final output inline in the thread), and
+      `PostSystem` (V0.8 building block -- not auto-fired in V0.7
+      because task cards already render in the thread interleaved
+      by created_at, so it would be noise).
+- [x] **REST**: `GET/POST /api/issues/:id/comments`,
+      `PATCH/DELETE /api/comments/:id`. PATCH accepts `body` (edit)
+      and `resolved` (toggle).
+- [x] **WS events** `comment:created / updated / deleted`. Frontend
+      invalidates the issue-comment query on any matching event.
+- [x] **`IssueThread` React component** replaces the V0.6 "Task runs"
+      list as the IssueDetail primary view. Interleaves comments
+      (member/agent) with task cards by created_at, ties broken
+      toward comments first so "post + auto-enqueue" reads as
+      comment → resulting task.
+- [x] **`ReplyComposer`** at the bottom of the thread with
+      auto-growing textarea, Cmd/Ctrl+Enter to send, Markdown
+      supported. Button label flips between "Send + run" (assignee
+      present) and "Send" (note-only).
+- [x] **Visual distinction** member (accent border) / agent (success
+      border) / system (dim italic). Edit + delete buttons on
+      member-authored rows; resolve-thread toggle on every row
+      via the PATCH endpoint.
+
+### V0.6 -- Project-aware UX
 
 - [x] **Project info probe.** New `server/internal/projectinfo`
       package shells out to `git` to report branch, head commit,
@@ -197,56 +240,30 @@ design are preserved here so the rationale survives a future re-read:
   Multica has no equivalent UI; the CLIs auto-load them silently and
   that's it.
 
-### V0.7 -- Comments + multi-turn
+### V0.7 -- shipped
 
-**Goal:** stop forcing "Run again" + prior session as the only
-followup mechanism. Issues become threads. **Also the prerequisite
-for V0.8** -- Multica's multi-agent design uses comments as the
-inter-agent message bus, so we ship comments first.
+See "Done so far → V0.7" above. The research notes that informed the
+design are preserved here:
 
-#### Must
-
-- [ ] **`comment` table.** Author = member (you) or agent. Parent =
-      issue. Ordered by created_at. Schema ported from Multica's
-      migration `001_init` + `017_comment_parent_id` + `069_comment_resolved_at`:
-      `id, issue_id, parent_comment_id NULL, author_type ('member'|'agent'|'system'),
-      author_id, body, created_at, updated_at, resolved_at NULL`.
-      `parent_comment_id` enables threading; `resolved_at` lets the
-      UI hide closed discussions.
-- [ ] **Comment-triggered task.** Posting a member comment on an issue
-      that already has an assignee enqueues a new task; prompt = the
-      comment content (not the issue description re-sent); resume
-      chain unchanged. Implemented as a join row, port of
-      `028_task_trigger_comment.up.sql`:
-      `agent_task_queue.trigger_comment_id NULL` -- one comment can
-      trigger at most one task; UI links each task card back to the
-      comment that started it.
-- [ ] **UI:** issue detail gets a chronological thread of comments
-      interleaved with task conversation collapsibles, plus a "Reply"
-      composer at the bottom.
-- [ ] **WS event `comment:created`** and frontend invalidates the
-      thread query.
-- [ ] **System-author comments** for agent-generated handoff messages
-      (port of `107_comment_system_author.up.sql`). When V0.8's
-      leader posts "I delegated this to @coder" or a worker posts
-      "done -- here's what I changed", they're system-authored
-      comments, not free-form text -- the UI can render them
-      distinctly.
-
-#### Should
-
-- [ ] Edit / delete own comments.
-- [ ] Agent comments distinguished visually from member comments.
-- [ ] Markdown rendering on comments (reuses the V0.2
-      react-markdown setup).
-
-#### Won't
-
-- @mention triggers across agents -- V0.8 (depends on multi-agent).
-- Comment reactions (Multica's `026_comment_reactions`) -- not useful
-  in single-user mode; defer to V2.
-- Comment full-text search (Multica's `033_comment_search_index`) --
-  SQLite FTS5 is trivial to add later; not needed before V1.0.
+- Schema is a direct port of Multica's comment system, condensed
+  into one migration (`004_comments.sql`) because we start fresh.
+  Mapping: their `001_init` (base columns) + `017_comment_parent_id`
+  (threading) + `018_comment_parent_cascade` (ON DELETE CASCADE) +
+  `069_comment_resolved_at` (resolved flag) + `107_comment_system_author`
+  (`'system'` author_type) all collapse into our single file.
+- Explicitly NOT ported -- still deferred:
+  - `026_comment_reactions` -- emoji reactions, not useful single-user
+  - `033_comment_search_index` -- SQLite FTS5, trivial later
+  - `025_comment_workspace_id` -- Multica scopes per workspace;
+    we get the same scope via `issue_id` + the single-user data dir
+- `PostSystem` is a public method on `CommentService` but the V0.7
+  task lifecycle does NOT auto-fire it. The task cards already render
+  in the thread interleaved by created_at, so auto-posting
+  "queued/running/completed" would just be noise. It stays available
+  for V0.8 where the squad leader's "delegated to @worker" rows
+  have no equivalent task card and need a thread entry.
+- `@mention` triggers across agents are part of V0.8 (within a squad)
+  and V1.1 (open across the workspace), not V0.7.
 
 ### V0.8 -- Squad (Leader + Worker, first multi-agent mode)
 
