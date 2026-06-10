@@ -118,10 +118,58 @@ edge cases they hit are documented in migrations 001-110+.
 
 When the agent finishes a milestone and asks the user to verify, also
 print a numbered checklist of click-throughs the user can follow to
-exercise every Must item. Keep it tight (10-15 steps max), name the
-exact UI surfaces to click, and include the expected observation
-after each step so the user can self-judge pass/fail without asking
-back.
+exercise every Must item. Keep it tight (≤3 scenarios, each with 3-5
+checks; not 14 atomic steps), name the exact UI surfaces to click,
+and include the expected observation after each step so the user can
+self-judge pass/fail without asking back.
+
+### Writing test prompts -- read these rules
+
+These mistakes the agent keeps making; address them upfront so the
+user doesn't have to repeat the correction:
+
+- **Project mode vs sandbox mode is the #1 trap.** When the test
+  prompt asks the agent to "list / read / modify files in the
+  user's real repo", the issue **MUST be bound to a Project** —
+  otherwise the agent's cwd is `%APPDATA%\Logos\workspaces\issue-<id>\`
+  (an empty sandbox dir) and the prompt fails opaquely. **Always**
+  begin a test scenario by either: (a) explicitly saying "bind
+  this issue to the `<name>` project", or (b) writing the prompt
+  in cwd-relative terms ("count files in the current directory")
+  AND telling the user this works in either mode.
+- **For V0.6 regressions (dirty guard / diff stat) the test MUST
+  use project mode.** Sandbox mode has no git context and the
+  V0.6 chips/dialogs never fire.
+- **For V0.7 multi-turn (`↻ resumed` chip) two consecutive tasks
+  on the SAME issue + SAME agent are required.** A fresh issue's
+  second task is the first one to ever show the chip.
+- **Don't ask the agent to modify files unless the user has just
+  committed (or is willing to stash).** When the test writes to
+  the working tree, append "remember to `git checkout <file>`
+  after the test" so the user doesn't accidentally ship the
+  test edit.
+- **Don't invent capabilities.** Only ask the agent to do things
+  Logos actually supports right now (read/write files via Claude
+  Code or Copilot CLI). Don't reference unshipped features like
+  squad delegation, @mentions, autopilots, skills.
+
+### Test layout template
+
+Mirror the V0.4 / V0.7 style proven to work for this user:
+
+1. **Group into ≤3 scenarios**, each exercising 3-5 atomic checks.
+2. **Each scenario opens with literal copy-pasteable content**
+   (title, description, which project to bind, which agent to pick).
+3. **Each verification step shows the EXPECTED UI** in a monospace
+   code block (ASCII art of borders, badge labels, chip text).
+   The user pattern-matches against the actual UI without asking
+   "what should this look like?".
+4. **For every "if it doesn't work" branch, supply a PowerShell
+   diagnostic block** that reads from
+   `%APPDATA%\Logos\runtime.json` and dumps the relevant
+   `/api/...` rows so the user can paste the output back instead
+   of describing a bug verbally.
+5. **End with "跑通告诉我 / 出错贴 step 编号 + 现象".**
 
 ### Always-run smoke (every milestone)
 
