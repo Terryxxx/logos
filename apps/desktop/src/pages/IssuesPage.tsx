@@ -558,6 +558,19 @@ function IssueDetail({
           issueId={issue.id}
           hasAssignee={!!issue.assignee_agent_id || !!issue.squad_id}
           agents={agents}
+          mentionCandidates={
+            // V0.8 autocomplete source: when the issue is squad-
+            // assigned, hand the composer the squad's full member
+            // roster (leader + workers) so typing @ surfaces every
+            // name the leader could meaningfully delegate to. When
+            // the issue is single-agent-assigned, no autocomplete --
+            // bare member mentions don't fan out in V0.8.
+            squad
+              ? squad.members
+                  .map((m) => agents.find((a) => a.id === m.agent_id))
+                  .filter((a): a is Agent => !!a)
+              : []
+          }
           renderTaskCard={(t) => {
             // Resume detection: a task is "resumed from a prior run"
             // when its session_id matches another EARLIER task on the
