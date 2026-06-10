@@ -25,13 +25,14 @@ type Handler struct {
 	st       *store.Store
 	tasks    *service.TaskService
 	comments *service.CommentService // V0.7
+	squads   *service.SquadService   // V0.8
 	bus      *events.Bus
 	token    string
 	runner   *service.Runner // optional; set by NewRouter for /cancel hook
 }
 
-func New(st *store.Store, tasks *service.TaskService, comments *service.CommentService, bus *events.Bus, token string) *Handler {
-	return &Handler{st: st, tasks: tasks, comments: comments, bus: bus, token: token}
+func New(st *store.Store, tasks *service.TaskService, comments *service.CommentService, squads *service.SquadService, bus *events.Bus, token string) *Handler {
+	return &Handler{st: st, tasks: tasks, comments: comments, squads: squads, bus: bus, token: token}
 }
 
 // SetRunner is called by NewRouter so the /cancel endpoint can interrupt
@@ -113,6 +114,20 @@ func NewRouter(h *Handler, hub *realtime.Hub, token string) http.Handler {
 				r.Patch("/", h.UpdateProject)
 				r.Delete("/", h.DeleteProject)
 				r.Get("/info", h.GetProjectInfo) // V0.6: git status + instruction files + recent commits
+			})
+		})
+
+		// V0.8: Squads. Members are managed through nested routes so
+		// the URL itself documents the squad/member relationship.
+		r.Route("/api/squads", func(r chi.Router) {
+			r.Get("/", h.ListSquads)
+			r.Post("/", h.CreateSquad)
+			r.Route("/{id}", func(r chi.Router) {
+				r.Get("/", h.GetSquad)
+				r.Patch("/", h.UpdateSquad)
+				r.Delete("/", h.DeleteSquad)
+				r.Post("/members", h.AddSquadMember)
+				r.Delete("/members/{agent_id}", h.RemoveSquadMember)
 			})
 		})
 

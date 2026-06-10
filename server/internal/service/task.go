@@ -41,18 +41,57 @@ func (s *TaskService) signalWakeup() {
 	}
 }
 
-// EnqueueForIssue creates a queued task for the issue's current assignee.
-// Returns nil, nil when the issue has no assignee (caller decides if that's an error).
+// EnqueueForIssue creates a queued task for the issue's current
+// assignee. V0.7 entry path: when no comment triggered the run, the
+// runner uses the issue title+description as the prompt.
+//
+// V0.8: if the issue is assigned to a squad (not a single agent), the
+// task is created against the squad's leader agent with is_leader_task=true.
+// Worker tasks are NOT enqueued here -- they happen lazily via the
+// leader's @-mention comments through CommentService.PostAgent.
+//
+// Returns nil, nil when the issue has neither an agent nor a squad
+// assignee.
 func (s *TaskService) EnqueueForIssue(ctx context.Context, issueID string) (*store.Task, error) {
 	return s.enqueueForIssue(ctx, issueID, "")
 }
 
-// EnqueueFromComment is V0.7's variant: links the new task to the comment
-// that woke it via agent_task_queue.trigger_comment_id. The runner reads
-// that column to swap the prompt source from issue title+description to
-// the comment body. Same nil-on-no-assignee semantics as EnqueueForIssue.
+// EnqueueFromComment is V0.7's variant: links the new task to the
+// comment that woke it via agent_task_queue.trigger_comment_id. Same
+// squad-routing logic as EnqueueForIssue.
 func (s *TaskService) EnqueueFromComment(ctx context.Context, issueID, commentID string) (*store.Task, error) {
 	return s.enqueueForIssue(ctx, issueID, commentID)
+}
+
+// EnqueueWorker is V0.8's variant: explicitly creates a worker task
+// inside a squad context with both is_leader_task=false and
+// parent_task_id set. Called from CommentService.PostAgent after the
+// mention parser identifies which workers to wake. NOT called from
+// EnqueueForIssue -- the leader's mention is the only path to a
+// worker task, so the user can always trace which delegation spawned
+// which task.
+func (s *TaskService) EnqueueWorker(
+	ctx context.Context,
+	issueID, workerAgentID, parentTaskID, triggerCommentID string,
+) (*store.Task, error) {
+	agent, err := s.st.GetAgent(workerAgentID)
+	if err != nil {
+		return nil, err
+	}
+	task, err := s.st.CreateTaskFull(store.CreateTaskParams{
+		AgentID:          agent.ID,
+		RuntimeID:        agent.RuntimeID,
+		IssueID:          issueID,
+		TriggerCommentID: triggerCommentID,
+		IsLeaderTask:     false,
+		ParentTaskID:     parentTaskID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	s.bus.Publish(protocol.EventTaskQueued, task)
+	s.signalWakeup()
+	return task, nil
 }
 
 func (s *TaskService) enqueueForIssue(ctx context.Context, issueID, triggerCommentID string) (*store.Task, error) {
@@ -60,6 +99,34 @@ func (s *TaskService) enqueueForIssue(ctx context.Context, issueID, triggerComme
 	if err != nil {
 		return nil, err
 	}
+
+	// V0.8: squad path takes precedence -- if the issue is assigned
+	// to a squad, route to the leader with is_leader_task=true.
+	if issue.SquadID.Valid {
+		squad, err := s.st.GetSquad(issue.SquadID.String)
+		if err != nil {
+			return nil, err
+		}
+		leader, err := s.st.GetAgent(squad.LeaderAgentID)
+		if err != nil {
+			return nil, err
+		}
+		task, err := s.st.CreateTaskFull(store.CreateTaskParams{
+			AgentID:          leader.ID,
+			RuntimeID:        leader.RuntimeID,
+			IssueID:          issue.ID,
+			TriggerCommentID: triggerCommentID,
+			IsLeaderTask:     true,
+		})
+		if err != nil {
+			return nil, err
+		}
+		s.bus.Publish(protocol.EventTaskQueued, task)
+		s.signalWakeup()
+		return task, nil
+	}
+
+	// V0.1 / V0.5 / V0.7 path: single-agent assignment.
 	if !issue.AssigneeAgentID.Valid {
 		return nil, nil
 	}
@@ -67,7 +134,6 @@ func (s *TaskService) enqueueForIssue(ctx context.Context, issueID, triggerComme
 	if err != nil {
 		return nil, err
 	}
-
 	task, err := s.st.CreateTaskWithTrigger(agent.ID, agent.RuntimeID, issue.ID, triggerCommentID)
 	if err != nil {
 		return nil, err

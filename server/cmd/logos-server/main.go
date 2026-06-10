@@ -74,10 +74,11 @@ func main() {
 
 	taskSvc := service.NewTaskService(st, bus)
 	commentSvc := service.NewCommentService(st, taskSvc, bus)
+	squadSvc := service.NewSquadService(st, bus)
 	runner := service.NewRunner(st, taskSvc, commentSvc, agent.RegistryDefault(), filepath.Join(cfg.DataDir, "workspaces"))
 	go runner.Run(context.Background())
 
-	h := handler.New(st, taskSvc, commentSvc, bus, tok)
+	h := handler.New(st, taskSvc, commentSvc, squadSvc, bus, tok)
 	h.SetRunner(runner)
 	r := handler.NewRouter(h, hub, tok)
 

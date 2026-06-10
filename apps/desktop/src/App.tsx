@@ -1,17 +1,19 @@
 import { useState } from "react";
-import { Inbox, Bot, Cpu, FolderGit2, type LucideIcon } from "lucide-react";
+import { Inbox, Bot, Cpu, FolderGit2, Users, type LucideIcon } from "lucide-react";
 
 import { cn } from "./lib/utils";
 import { IssuesPage } from "./pages/IssuesPage";
 import { AgentsPage } from "./pages/AgentsPage";
 import { RuntimesPage } from "./pages/RuntimesPage";
 import { ProjectsPage } from "./pages/ProjectsPage";
+import { SquadsPage } from "./pages/SquadsPage";
 
-type PageKey = "issues" | "projects" | "agents" | "runtimes";
+type PageKey = "issues" | "projects" | "squads" | "agents" | "runtimes";
 
 const NAV: { key: PageKey; label: string; icon: LucideIcon }[] = [
   { key: "issues", label: "Issues", icon: Inbox },
   { key: "projects", label: "Projects", icon: FolderGit2 },
+  { key: "squads", label: "Squads", icon: Users },
   { key: "agents", label: "Agents", icon: Bot },
   { key: "runtimes", label: "Runtimes", icon: Cpu },
 ];
@@ -24,7 +26,7 @@ export default function App() {
       <aside className="flex flex-col border-r border-border bg-panel">
         <div className="px-4 py-5">
           <div className="text-lg font-semibold tracking-tight">Logos</div>
-          <div className="text-xs opacity-50">v0.1.0</div>
+          <div className="text-xs opacity-50">v0.8.0</div>
         </div>
         <nav className="flex flex-col gap-1 px-2">
           {NAV.map((n) => {
@@ -51,6 +53,7 @@ export default function App() {
       <main className="overflow-hidden">
         {page === "issues" && <IssuesPage />}
         {page === "projects" && <ProjectsPage />}
+        {page === "squads" && <SquadsPage />}
         {page === "agents" && <AgentsPage />}
         {page === "runtimes" && <RuntimesPage />}
       </main>

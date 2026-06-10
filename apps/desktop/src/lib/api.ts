@@ -69,6 +69,7 @@ export type Issue = {
   status: "todo" | "in_progress" | "done" | "cancelled";
   assignee_agent_id?: string;
   project_id?: string;
+  squad_id?: string; // V0.8 (mutually exclusive with assignee_agent_id)
   created_at: string;
   updated_at: string;
 };
@@ -81,6 +82,32 @@ export type Project = {
   created_at: string;
   updated_at: string;
 };
+
+// V0.8: Squad is a team with one leader agent + N worker agents.
+// When an issue is assigned to a squad, the runner dispatches a
+// leader task; workers wake when the leader @-mentions them.
+export type Squad = {
+  id: string;
+  name: string;
+  description: string;
+  leader_agent_id: string;
+  instructions: string;
+  archived_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SquadMember = {
+  squad_id: string;
+  agent_id: string;
+  role: string;
+  created_at: string;
+};
+
+// SquadWithMembers is what GET /api/squads and GET /api/squads/:id return:
+// the squad row plus its hydrated member list so the UI can render
+// cards / detail without an extra round-trip per squad.
+export type SquadWithMembers = Squad & { members: SquadMember[] };
 
 export type Task = {
   id: string;
@@ -117,6 +144,15 @@ export type Task = {
   // initial-assign tasks. Lets the UI render a "↳ in reply to" chip
   // that scrolls to the source comment.
   trigger_comment_id: string | null;
+
+  // V0.8 -- squad task tree.
+  // is_leader_task: TRUE for the leader's task in a squad-assigned
+  //   issue. UI uses this to render a "👑 leader" chip.
+  // parent_task_id: the leader task that delegated this worker task.
+  //   NULL for leader tasks and for any non-squad task. UI indents
+  //   worker rows under their parent leader row.
+  is_leader_task: boolean;
+  parent_task_id: string | null;
 };
 
 // V0.7: a row in the issue thread. The same shape covers human-written

@@ -36,24 +36,66 @@ type Task struct {
 	// set, the runner uses the comment body as the prompt instead of
 	// the issue title+description.
 	TriggerCommentID NullString `json:"trigger_comment_id"`
+
+	// V0.8 -- squad task tree.
+	// IsLeaderTask: TRUE for the leader's task in a squad-assigned
+	//   issue. Drives the runner's leader-prompt injection AND the
+	//   self-trigger guard ("a leader's own comments don't trigger
+	//   itself again" -- consult the comment author's most recent
+	//   task on the issue and skip when that task was a leader).
+	// ParentTaskID: the leader task that delegated this worker task.
+	//   NULL for leader tasks and for any non-squad task. UI uses
+	//   this to indent worker tasks under the leader in the thread.
+	IsLeaderTask bool       `json:"is_leader_task"`
+	ParentTaskID NullString `json:"parent_task_id"`
 }
 
 // CreateTask inserts a new row in 'queued'. Caller (TaskService) is responsible
 // for emitting the protocol.EventTaskQueued event AFTER this returns.
 func (s *Store) CreateTask(agentID, runtimeID, issueID string) (*Task, error) {
-	return s.CreateTaskWithTrigger(agentID, runtimeID, issueID, "")
+	return s.CreateTaskFull(CreateTaskParams{
+		AgentID: agentID, RuntimeID: runtimeID, IssueID: issueID,
+	})
 }
 
-// CreateTaskWithTrigger is the V0.7 variant: links the new task to the
-// comment that woke it. Empty triggerCommentID is the V0.6 behaviour
-// (Run again / initial assign). The runner reads this column to swap
-// the prompt source from issue title+description to the comment body.
+// CreateTaskWithTrigger is the V0.7 convenience shim: links the new
+// task to the comment that woke it. Kept for the callers that don't
+// need the V0.8 squad fields.
 func (s *Store) CreateTaskWithTrigger(agentID, runtimeID, issueID, triggerCommentID string) (*Task, error) {
+	return s.CreateTaskFull(CreateTaskParams{
+		AgentID:          agentID,
+		RuntimeID:        runtimeID,
+		IssueID:          issueID,
+		TriggerCommentID: triggerCommentID,
+	})
+}
+
+// CreateTaskParams bundles every column a fresh task can carry. The
+// runner / TaskService picks which fields to populate; everything
+// not set defaults to NULL or FALSE.
+type CreateTaskParams struct {
+	AgentID          string
+	RuntimeID        string
+	IssueID          string
+	TriggerCommentID string // V0.7
+	IsLeaderTask     bool   // V0.8 (squad leader)
+	ParentTaskID     string // V0.8 (worker task -> leader task)
+}
+
+func (s *Store) CreateTaskFull(p CreateTaskParams) (*Task, error) {
 	id := uuid.NewString()
+	leader := 0
+	if p.IsLeaderTask {
+		leader = 1
+	}
 	_, err := s.db.Exec(`
-		INSERT INTO agent_task_queue (id, agent_id, runtime_id, issue_id, trigger_comment_id)
-		VALUES (?, ?, ?, ?, ?)
-	`, id, agentID, runtimeID, issueID, nullStr(triggerCommentID))
+		INSERT INTO agent_task_queue (
+			id, agent_id, runtime_id, issue_id,
+			trigger_comment_id, is_leader_task, parent_task_id
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, id, p.AgentID, p.RuntimeID, p.IssueID,
+		nullStr(p.TriggerCommentID), leader, nullStr(p.ParentTaskID))
 	if err != nil {
 		return nil, err
 	}
@@ -224,20 +266,40 @@ func nullStr(s string) any {
 	return s
 }
 
-const taskCols = `id, agent_id, runtime_id, issue_id, status, session_id, work_dir, result, error, failure_reason, dispatched_at, started_at, completed_at, created_at, pre_ref, post_ref, diff_additions, diff_deletions, diff_changed_files, trigger_comment_id`
+const taskCols = `id, agent_id, runtime_id, issue_id, status, session_id, work_dir, result, error, failure_reason, dispatched_at, started_at, completed_at, created_at, pre_ref, post_ref, diff_additions, diff_deletions, diff_changed_files, trigger_comment_id, is_leader_task, parent_task_id`
 const taskSelect = `SELECT ` + taskCols + ` FROM agent_task_queue`
 
 func scanTask(sc scanner) (*Task, error) {
 	var t Task
+	var leader int
 	if err := sc.Scan(&t.ID, &t.AgentID, &t.RuntimeID, &t.IssueID, &t.Status,
 		&t.SessionID, &t.WorkDir, &t.Result, &t.Error, &t.FailureReason,
 		&t.DispatchedAt, &t.StartedAt, &t.CompletedAt, &t.CreatedAt,
 		&t.PreRef, &t.PostRef,
 		&t.DiffAdditions, &t.DiffDeletions, &t.DiffChangedFiles,
-		&t.TriggerCommentID); err != nil {
+		&t.TriggerCommentID,
+		&leader, &t.ParentTaskID); err != nil {
 		return nil, err
 	}
+	t.IsLeaderTask = leader != 0
 	return &t, nil
+}
+
+// GetLastTaskByIssueAgent returns the most recent task on the given
+// (issue, agent) excluding excludeTaskID. Used by V0.8's self-trigger
+// guard -- if the comment author's last task on this issue was a
+// leader task, we don't re-wake them.
+func (s *Store) GetLastTaskByIssueAgent(issueID, agentID, excludeTaskID string) (*Task, error) {
+	row := s.db.QueryRow(taskSelect+`
+		WHERE issue_id = ? AND agent_id = ? AND id != ?
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, issueID, agentID, excludeTaskID)
+	t, err := scanTask(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return t, err
 }
 
 type TaskMessage struct {

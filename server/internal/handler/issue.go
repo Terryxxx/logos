@@ -24,6 +24,7 @@ type createIssueReq struct {
 	Description     string  `json:"description"`
 	AssigneeAgentID *string `json:"assignee_agent_id,omitempty"`
 	ProjectID       *string `json:"project_id,omitempty"`
+	SquadID         *string `json:"squad_id,omitempty"` // V0.8
 }
 
 func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
@@ -42,12 +43,23 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if req.SquadID != nil && *req.SquadID != "" {
+		if _, err := h.st.GetSquad(*req.SquadID); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "squad not found"})
+			return
+		}
+	}
+	if req.SquadID != nil && *req.SquadID != "" && req.AssigneeAgentID != nil && *req.AssigneeAgentID != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "assignee_agent_id and squad_id are mutually exclusive"})
+		return
+	}
 
 	issue, err := h.st.CreateIssue(store.CreateIssueParams{
 		Title:           req.Title,
 		Description:     req.Description,
 		AssigneeAgentID: req.AssigneeAgentID,
 		ProjectID:       req.ProjectID,
+		SquadID:         req.SquadID,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -55,10 +67,12 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	h.bus.Publish(protocol.EventIssueCreated, issue)
 
-	// If created with an assignee, auto-enqueue a task.
-	if req.AssigneeAgentID != nil && *req.AssigneeAgentID != "" {
+	// If created with an assignee (single agent OR squad), auto-enqueue
+	// a task. Squad path goes to the leader with is_leader_task=true.
+	hasAssignee := (req.AssigneeAgentID != nil && *req.AssigneeAgentID != "") ||
+		(req.SquadID != nil && *req.SquadID != "")
+	if hasAssignee {
 		if _, err := h.tasks.EnqueueForIssue(r.Context(), issue.ID); err != nil {
-			// Soft-fail: the issue exists, just couldn't enqueue.
 			writeJSON(w, http.StatusCreated, map[string]any{
 				"issue":         issue,
 				"enqueue_error": err.Error(),
@@ -90,6 +104,7 @@ type updateIssueReq struct {
 	AssigneeAgentID *string `json:"assignee_agent_id,omitempty"`
 	ClearAssignee   bool    `json:"clear_assignee,omitempty"`
 	ProjectID       *string `json:"project_id,omitempty"` // "" clears, value sets
+	SquadID         *string `json:"squad_id,omitempty"`   // V0.8: "" clears, value sets
 }
 
 func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
@@ -110,7 +125,14 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if req.SquadID != nil && *req.SquadID != "" {
+		if _, err := h.st.GetSquad(*req.SquadID); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "squad not found"})
+			return
+		}
+	}
 	prevAssignee := cur.AssigneeID
+	prevSquad := cur.SquadIDStr
 	issue, err := h.st.UpdateIssue(id, store.UpdateIssueParams{
 		Title:           req.Title,
 		Description:     req.Description,
@@ -118,6 +140,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		AssigneeAgentID: req.AssigneeAgentID,
 		ClearAssignee:   req.ClearAssignee,
 		ProjectID:       req.ProjectID,
+		SquadID:         req.SquadID,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -125,8 +148,12 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	h.bus.Publish(protocol.EventIssueUpdated, issue)
 
-	// If the assignee was just set (newly or changed), auto-enqueue.
-	if issue.AssigneeID != nil && (prevAssignee == nil || *prevAssignee != *issue.AssigneeID) {
+	// Auto-enqueue on first-time assignment OR when the assignee
+	// changed to a different target. Single-agent and squad changes
+	// both trigger.
+	assigneeChanged := issue.AssigneeID != nil && (prevAssignee == nil || *prevAssignee != *issue.AssigneeID)
+	squadChanged := issue.SquadIDStr != nil && (prevSquad == nil || *prevSquad != *issue.SquadIDStr)
+	if assigneeChanged || squadChanged {
 		if _, err := h.tasks.EnqueueForIssue(r.Context(), issue.ID); err != nil {
 			writeJSON(w, http.StatusOK, map[string]any{
 				"issue":         issue,

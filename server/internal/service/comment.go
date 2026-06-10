@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/logos-app/logos/server/internal/events"
+	"github.com/logos-app/logos/server/internal/mentions"
 	"github.com/logos-app/logos/server/internal/store"
 	"github.com/logos-app/logos/server/pkg/protocol"
 )
@@ -79,7 +80,17 @@ func (s *CommentService) PostMember(ctx context.Context, issueID, body string) (
 // comment so the issue thread shows it inline. No-op when body is
 // empty -- many Q&A tasks leave their final result blank. authorID
 // is the agent.id so the UI can render the agent name.
-func (s *CommentService) PostAgent(issueID, agentID, body string) {
+//
+// V0.8: when the posting agent is the leader of a squad assigned to
+// this issue, the body is scanned for @<worker-name> mentions and a
+// worker task is enqueued for each unambiguously-resolved member
+// (excluding self). The originatingTaskID becomes the parent_task_id
+// of those worker tasks so the UI can render the delegation tree.
+//
+// originatingTaskID is the leader's task that emitted this comment;
+// pass empty string when the comment isn't tied to a task (e.g. a
+// manually-injected agent message in a debug path).
+func (s *CommentService) PostAgent(ctx context.Context, issueID, agentID, originatingTaskID, body string) {
 	if strings.TrimSpace(body) == "" {
 		return
 	}
@@ -94,6 +105,90 @@ func (s *CommentService) PostAgent(issueID, agentID, body string) {
 		return
 	}
 	s.bus.Publish(protocol.EventCommentCreated, c)
+
+	// V0.8: if this is a squad-assigned issue AND the agent is the
+	// leader of that squad, fan out worker tasks for each mentioned
+	// worker. Non-squad issues and worker comments fall through
+	// without delegation.
+	if originatingTaskID != "" {
+		s.handleMentionsForSquadAgent(ctx, issueID, agentID, originatingTaskID, c.ID, body)
+	}
+}
+
+// handleMentionsForSquadAgent is the V0.8 delegation core. It:
+//  1. Confirms the issue is squad-assigned.
+//  2. Confirms the posting agent is a member of that squad. Comments
+//     from arbitrary agents on a squad issue do NOT delegate (avoids
+//     accidental triggers from agents unrelated to the squad).
+//  3. Parses @-mentions, resolves them against the squad's roster
+//     (NOT the global agent list -- mentions can only wake squad
+//     members; "@coder" referring to an agent outside the squad is
+//     silently ignored).
+//  4. Drops self-mentions and applies the leader self-trigger guard:
+//     if the comment author's most recent task on this issue was a
+//     leader task, mentions of that same agent are skipped (matches
+//     Multica's 090 rule).
+//  5. Enqueues a worker task per surviving mentioned agent.
+func (s *CommentService) handleMentionsForSquadAgent(
+	ctx context.Context,
+	issueID, posterAgentID, originatingTaskID, commentID, body string,
+) {
+	issue, err := s.st.GetIssue(issueID)
+	if err != nil || issue == nil || !issue.SquadID.Valid {
+		return
+	}
+	members, err := s.st.ListSquadMembers(issue.SquadID.String)
+	if err != nil {
+		slog.Warn("squad mention: list members failed", "squad_id", issue.SquadID.String, "error", err)
+		return
+	}
+	// Confirm the poster is part of this squad.
+	posterIsMember := false
+	for _, m := range members {
+		if m.AgentID == posterAgentID {
+			posterIsMember = true
+			break
+		}
+	}
+	if !posterIsMember {
+		return
+	}
+
+	// Build the mention-parser's candidate list from the squad
+	// members (joined with their name).
+	cands := make([]mentions.Candidate, 0, len(members))
+	for _, m := range members {
+		ag, err := s.st.GetAgent(m.AgentID)
+		if err != nil {
+			continue
+		}
+		cands = append(cands, mentions.Candidate{ID: ag.ID, Name: ag.Name})
+	}
+	mentioned := mentions.Parse(body, cands)
+	if len(mentioned) == 0 {
+		return
+	}
+
+	for _, workerID := range mentioned {
+		if workerID == posterAgentID {
+			// Self-mention. Skip; an agent can't delegate to itself.
+			continue
+		}
+		// Self-trigger guard generalised (Multica's 090 rationale):
+		// if the worker's most recent task on this issue was itself
+		// a leader task, the mention came from someone delegating
+		// back UP to the leader -- treat it as noise. (Without this
+		// guard a leader -> worker -> leader chain via comments
+		// loops forever.)
+		last, err := s.st.GetLastTaskByIssueAgent(issueID, workerID, originatingTaskID)
+		if err == nil && last != nil && last.IsLeaderTask {
+			continue
+		}
+		if _, err := s.tasks.EnqueueWorker(ctx, issueID, workerID, originatingTaskID, commentID); err != nil {
+			slog.Warn("enqueue worker from mention failed",
+				"issue_id", issueID, "worker_id", workerID, "error", err)
+		}
+	}
 }
 
 // PostSystem records a Logos-internal handoff message on the issue

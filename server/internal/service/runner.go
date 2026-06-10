@@ -2,9 +2,11 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/logos-app/logos/server/internal/agent"
@@ -216,9 +218,26 @@ func (r *Runner) executeTask(parent context.Context, a store.Agent, task store.T
 	if prompt == "" {
 		prompt = buildPrompt(issue.Title, issue.Description)
 	}
+	// V0.8: when this is a squad-leader task, append a system-prompt
+	// section telling the agent who the workers are and how to
+	// delegate (post a comment starting with @<worker-name>). Plus
+	// the per-squad addendum from squad.instructions.
+	systemPrompt := a.Instructions
+	if task.IsLeaderTask && issue.SquadID.Valid {
+		leaderAddendum, lerr := r.buildLeaderPrompt(parent, issue.SquadID.String, a.ID)
+		if lerr != nil {
+			taskLog.Warn("build leader prompt failed; running without squad addendum", "error", lerr)
+		} else if leaderAddendum != "" {
+			if systemPrompt != "" {
+				systemPrompt = systemPrompt + "\n\n" + leaderAddendum
+			} else {
+				systemPrompt = leaderAddendum
+			}
+		}
+	}
 	opts := agent.ExecOptions{
 		WorkDir:      workDir,
-		SystemPrompt: a.Instructions,
+		SystemPrompt: systemPrompt,
 		ResumeID:     priorSession,
 	}
 
@@ -269,7 +288,7 @@ func (r *Runner) executeTask(parent context.Context, a store.Agent, task store.T
 		// "scroll to the latest task card to see the answer" affordance).
 		// No-op when result.Output is empty.
 		if r.comments != nil {
-			r.comments.PostAgent(task.IssueID, a.ID, result.Output)
+			r.comments.PostAgent(parent, task.IssueID, a.ID, task.ID, result.Output)
 		}
 	default:
 		reason := "agent_error"
@@ -311,4 +330,60 @@ func buildPrompt(title, description string) string {
 		return title
 	}
 	return "# " + title + "\n\n" + description
+}
+
+// buildLeaderPrompt assembles the system-prompt addendum injected for
+// a squad leader task. Lists the workers available (name + role) plus
+// the delegation convention ("post a comment beginning with
+// @<worker-name>") plus squad.instructions if non-empty.
+//
+// The leader itself is excluded from the listed workers -- self-
+// delegation is rejected anyway (see CommentService.handleMentionsForSquadAgent).
+func (r *Runner) buildLeaderPrompt(ctx context.Context, squadID, leaderAgentID string) (string, error) {
+	squad, err := r.st.GetSquad(squadID)
+	if err != nil {
+		return "", err
+	}
+	members, err := r.st.ListSquadMembers(squadID)
+	if err != nil {
+		return "", err
+	}
+
+	var workerLines []string
+	for _, m := range members {
+		if m.AgentID == leaderAgentID {
+			continue // leader excluded from delegate list
+		}
+		ag, err := r.st.GetAgent(m.AgentID)
+		if err != nil {
+			continue
+		}
+		role := m.Role
+		if role == "" {
+			role = "worker"
+		}
+		workerLines = append(workerLines,
+			fmt.Sprintf("- @%s (%s)", ag.Name, role))
+	}
+
+	var sb strings.Builder
+	sb.WriteString("## Squad coordination -- you are the leader of \"")
+	sb.WriteString(squad.Name)
+	sb.WriteString("\"\n\n")
+	if len(workerLines) == 0 {
+		sb.WriteString("This squad has no workers yet. Complete the task yourself.")
+	} else {
+		sb.WriteString("Available workers:\n")
+		sb.WriteString(strings.Join(workerLines, "\n"))
+		sb.WriteString("\n\n")
+		sb.WriteString("To delegate, post a comment on this issue that begins with `@<worker-name>` and contains the task for that worker. Each mention spawns one worker task; the worker sees the comment body as its prompt. You can mention multiple workers in a single comment; each gets its own task.\n\n")
+		sb.WriteString("If two workers share a name, disambiguate with `@<name>#<short-id>` (first 8 chars of the worker agent's id). Unambiguous bare mentions are preferred.\n\n")
+		sb.WriteString("You cannot delegate to yourself. You cannot re-trigger a worker whose most recent task on this issue was also a leader task (anti-loop guard).\n\n")
+		sb.WriteString("Finish by summarising what the workers produced.")
+	}
+	if strings.TrimSpace(squad.Instructions) != "" {
+		sb.WriteString("\n\n### Squad-specific instructions\n\n")
+		sb.WriteString(squad.Instructions)
+	}
+	return sb.String(), nil
 }

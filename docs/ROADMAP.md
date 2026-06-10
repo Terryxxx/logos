@@ -23,7 +23,64 @@ log for past versions.
 Listed by version, newest first. Each item shipped to `main` and is
 verified end-to-end on Windows.
 
-### V0.7 -- Comments + multi-turn (current)
+### V0.8 -- Squad (Leader + Worker via comments) (current)
+
+- [x] **Migration `005_squads.sql`.** Schema collapses Multica's
+      `084_squad` + `085_squad_archive` + `088_squad_instructions` +
+      `090_task_is_leader` into one file. Skipped on purpose:
+      `086_squad_avatar` (cosmetic), `087_squad_name_not_unique` (rare),
+      `089_squad_no_action_activity_index` (V1.5), the
+      `member_type IN ('agent','member')` polymorphism (single-user).
+      Adds `issue.squad_id` (nullable FK; XOR with `assignee_agent_id`
+      enforced at the service layer), `task.is_leader_task BOOLEAN`,
+      and `task.parent_task_id` self-FK for the squad task tree.
+- [x] **`server/internal/mentions` package** with full test coverage
+      (16 cases). Parses `@<worker-name>` (case-insensitive, word-
+      boundary-aware so `me@example.com` doesn't match), with
+      optional `#<short-id>` disambiguation when two workers share
+      a name. Ambiguous bare mentions are dropped, not silently
+      routed.
+- [x] **`store.Squad` CRUD.** Leader is also recorded in
+      `squad_member` so the runner's "all available members" query
+      returns a uniform row set; UI hides this duplication. Removing
+      the leader is rejected (set a new leader first).
+- [x] **`SquadService`** = WS pub wrapper around the store. Squad
+      events `squad:created / updated / deleted` mirror the
+      project-event shape.
+- [x] **Squad routing in `TaskService.EnqueueForIssue`.** When
+      `issue.squad_id` is set, route to the squad's leader with
+      `is_leader_task=true`. New `EnqueueWorker` path for the
+      mention-driven worker dispatch.
+- [x] **Leader-prompt addendum** built by the runner when
+      `task.IsLeaderTask`. Lists workers (excluding self), explains
+      the `@<worker-name>` delegation convention + `#<short-id>`
+      disambiguation, names the anti-loop rules, and appends
+      `squad.instructions` if non-empty. Sent as Claude's
+      `--append-system-prompt`; Copilot ignores it (documented).
+- [x] **Mention-driven worker enqueue** in `CommentService.PostAgent`.
+      After the runner posts the agent's final result, mentions are
+      parsed against the squad roster (NOT global -- mentions can only
+      wake squad members). Self-mentions dropped. Generalised
+      self-trigger guard: if the mentioned worker's most recent task
+      on this issue was itself a leader task, the mention is
+      skipped (Multica's `090_task_is_leader` rule, applied to any
+      agent in any role).
+- [x] **REST**: `GET/POST /api/squads`, `GET/PATCH/DELETE /api/squads/:id`,
+      `POST /api/squads/:id/members`, `DELETE /api/squads/:id/members/:agent_id`.
+      `POST /api/issues` and `PATCH /api/issues/:id` accept `squad_id`
+      and refuse `squad_id + assignee_agent_id` together.
+- [x] **UI: Squads tab** with create modal (leader picker + multi-select
+      member chips + leader-instructions textarea). Card layout shows
+      the leader + worker chips and an expandable instructions block.
+- [x] **UI: IssueCreate** has a 3-way assignee radio (Assign later /
+      Single agent / Squad) so the picker shape matches the mutually-
+      exclusive backend constraint. IssueDetail's assignee dropdown
+      uses optgroups for the same purpose.
+- [x] **UI: task tree indent.** Worker tasks render with `ml-6` +
+      left border so the leader → worker nesting is visible in the
+      thread. Plus chips on the task card: `👑 leader` and `↳ worker`.
+
+
 
 - [x] **`comment` table** (migration `004_comments.sql`). Schema
       ported from Multica's `001_init` + `017_comment_parent_id` +
@@ -265,18 +322,12 @@ design are preserved here:
 - `@mention` triggers across agents are part of V0.8 (within a squad)
   and V1.1 (open across the workspace), not V0.7.
 
-### V0.8 -- Squad (Leader + Worker, first multi-agent mode)
+### V0.8 -- shipped
 
-**Goal:** ship Multica's proven multi-agent shape: a **squad** is a
-named team with one **leader** agent and N **worker** agents, all
-communicating via the **comment thread** (built in V0.7). The user
-assigns an issue to a squad; the leader receives it, decides which
-workers to invoke, and posts `@worker` comments to delegate. Each
-delegation is a new task with the original issue as parent.
+See "Done so far → V0.8" above. The research notes that informed the
+design are preserved here:
 
-#### Why this shape (not "sequential pipeline" as originally planned)
-
-Multica explored two multi-agent paths and **only one survived**:
+Multica explored two multi-agent paths and only one survived:
 
 1. **CLI-native subagents** (Codex's `features.multi_agent`,
    `spawn_agent` / `send_input` / `wait`). Multica explicitly
@@ -294,70 +345,30 @@ Multica explored two multi-agent paths and **only one survived**:
    `090_task_is_leader`, `096_autopilot_squad_assignee`).
 
 Logos picks path 2 from day one. Sequential pipelines
-("planner → coder → reviewer") become a **squad template** -- a 3-member
-squad whose leader system-prompt says "call planner first, then coder,
-then reviewer" -- rather than its own execution mode.
+("planner → coder → reviewer") become a **squad template** -- a
+3-member squad whose leader system-prompt says "call planner first,
+then coder, then reviewer" -- rather than its own execution mode.
 
-#### Must
+The mention parser is in `server/internal/mentions/`, pure Go with
+its own test suite. Mentions are resolved against the squad's
+roster (NOT the global agent list), so `@coder` referring to an
+agent outside the squad is silently ignored. The generalised
+self-trigger guard ("if your last task here was a leader task,
+this mention won't re-wake you") prevents leader → worker → leader
+infinite loops.
 
-- [ ] **`squad` + `squad_member` tables.** Schema from
-      `084_squad.up.sql`:
-      `squad{id, name, description, leader_agent_id NOT NULL,
-      instructions TEXT (from 088), created_at, updated_at,
-      archived_at NULL (from 085)}` and
-      `squad_member{squad_id, agent_id, role TEXT}`. We skip the
-      `member_type IN ('agent','member')` polymorphism -- in single
-      user mode every member is an agent (humans don't get tasks).
-- [ ] **Issue assignee_type extended.** `issue.assignee_type` enum
-      gains `'squad'`; `issue.squad_id` nullable FK alongside the
-      existing `issue.agent_id`. Exactly one of the two is set per
-      issue.
-- [ ] **`task.is_leader_task BOOLEAN`** (from `090_task_is_leader`).
-      Distinguishes a leader-role task from a worker-role task on
-      the same agent -- needed because the same agent can appear in
-      multiple squads with different roles.
-- [ ] **`task.parent_task_id NULL`** so the UI can render the squad
-      task tree (leader at the top, worker tasks as children of the
-      delegating leader task).
-- [ ] **Leader-mode prompt template.** When the runner dispatches a
-      leader task, it appends a system-prompt section listing the
-      squad's workers + the convention "delegate by posting a
-      comment that starts with `@<worker-name>`". Per-squad custom
-      addendum from `squad.instructions` (port of
-      `088_squad_instructions`).
-- [ ] **Mention parser triggers worker tasks.** Reuses V0.7's
-      comment infrastructure -- when a leader's task generates a
-      comment that contains `@<worker-name>`, the comment-trigger
-      pipeline enqueues a worker task with
-      `is_leader_task=false`, `parent_task_id=<leader_task_id>`,
-      `trigger_comment_id=<comment_id>`.
-- [ ] **Self-trigger guard.** A leader cannot delegate to itself;
-      a worker's own comments cannot wake its own next round. The
-      guard consults the comment author's most recent task on the
-      issue and skips when that task was already a leader task --
-      this is Multica's actual rule (see `090_task_is_leader` rationale).
-- [ ] **UI: squad picker** in IssueCreate (next to the agent picker;
-      mutually exclusive). Squads CRUD page (similar shape to
-      Projects). IssueDetail shows the task tree -- leader task at
-      the root, indented worker tasks underneath.
+#### Should items still open (deferred to V1.5+)
 
-#### Should
-
-- [ ] **Built-in squad templates** -- one-click presets that create a
-      squad of existing agents with a curated leader prompt:
+- [ ] **Built-in squad templates** -- one-click presets that create
+      a squad of existing agents with a curated leader prompt:
       - `Plan + Code + Review` (the originally planned "sequential
         pipeline" use case, now expressed as a 3-member squad)
       - `Two-mind` (two coders run independently, leader picks the
         better diff)
-- [ ] **Visual delegation arrows** in the task tree (`leader → worker`
-      edges labelled with the trigger comment's first 40 chars).
-
-#### Won't (deferred to V1.5)
-
-- AI-routed leader -- Multica leaves leader decisions to the model;
-  V0.8 keeps that simple. Cap on cascade depth, "no-action" tracking
-  (Multica's `089_squad_no_action_activity_index`), and per-squad
-  archival/avatar polish all live in V1.5.
+- [ ] **Visual delegation arrows** in the task tree
+      (`leader → worker` edges labelled with the trigger comment's
+      first 40 chars). V0.8 ships a simple `ml-6` indent; the
+      arrow polish is V1.5 squad work.
 
 ### V0.9 -- Parallel Fan-out + token cost
 

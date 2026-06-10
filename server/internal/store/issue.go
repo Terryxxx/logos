@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"fmt"
 
 	"github.com/google/uuid"
 )
@@ -15,8 +16,13 @@ type Issue struct {
 	AssigneeID      *string        `json:"assignee_agent_id,omitempty"`
 	ProjectID       sql.NullString `json:"-"`
 	Project         *string        `json:"project_id,omitempty"`
-	CreatedAt       string         `json:"created_at"`
-	UpdatedAt       string         `json:"updated_at"`
+	// V0.8: assignee can be a squad instead of a single agent.
+	// Mutually exclusive with AssigneeAgentID -- enforced at the
+	// service layer (UpdateIssue / CreateIssue).
+	SquadID    sql.NullString `json:"-"`
+	SquadIDStr *string        `json:"squad_id,omitempty"`
+	CreatedAt  string         `json:"created_at"`
+	UpdatedAt  string         `json:"updated_at"`
 }
 
 type CreateIssueParams struct {
@@ -24,12 +30,13 @@ type CreateIssueParams struct {
 	Description     string
 	AssigneeAgentID *string
 	ProjectID       *string
+	SquadID         *string // V0.8
 }
 
 func (s *Store) CreateIssue(p CreateIssueParams) (*Issue, error) {
 	id := uuid.NewString()
 	var assignee sql.NullString
-	if p.AssigneeAgentID != nil {
+	if p.AssigneeAgentID != nil && *p.AssigneeAgentID != "" {
 		assignee.String = *p.AssigneeAgentID
 		assignee.Valid = true
 	}
@@ -38,10 +45,21 @@ func (s *Store) CreateIssue(p CreateIssueParams) (*Issue, error) {
 		project.String = *p.ProjectID
 		project.Valid = true
 	}
+	var squad sql.NullString
+	if p.SquadID != nil && *p.SquadID != "" {
+		squad.String = *p.SquadID
+		squad.Valid = true
+	}
+	// XOR: assignee_agent_id and squad_id are mutually exclusive.
+	// Caller is responsible for picking; we just refuse the
+	// impossible state at the store layer as a last guard.
+	if assignee.Valid && squad.Valid {
+		return nil, fmt.Errorf("issue cannot be assigned to both an agent and a squad")
+	}
 	_, err := s.db.Exec(`
-		INSERT INTO issue (id, title, description, assignee_agent_id, project_id)
-		VALUES (?, ?, ?, ?, ?)
-	`, id, p.Title, p.Description, assignee, project)
+		INSERT INTO issue (id, title, description, assignee_agent_id, project_id, squad_id)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, id, p.Title, p.Description, assignee, project, squad)
 	if err != nil {
 		return nil, err
 	}
@@ -50,14 +68,14 @@ func (s *Store) CreateIssue(p CreateIssueParams) (*Issue, error) {
 
 func (s *Store) GetIssue(id string) (*Issue, error) {
 	return scanIssue(s.db.QueryRow(`
-		SELECT id, title, description, status, assignee_agent_id, project_id, created_at, updated_at
+		SELECT id, title, description, status, assignee_agent_id, project_id, squad_id, created_at, updated_at
 		FROM issue WHERE id = ?
 	`, id))
 }
 
 func (s *Store) ListIssues() ([]Issue, error) {
 	rows, err := s.db.Query(`
-		SELECT id, title, description, status, assignee_agent_id, project_id, created_at, updated_at
+		SELECT id, title, description, status, assignee_agent_id, project_id, squad_id, created_at, updated_at
 		FROM issue ORDER BY created_at DESC
 	`)
 	if err != nil {
@@ -82,6 +100,7 @@ type UpdateIssueParams struct {
 	AssigneeAgentID *string
 	ClearAssignee   bool
 	ProjectID       *string // empty string clears
+	SquadID         *string // V0.8: empty string clears
 }
 
 func (s *Store) UpdateIssue(id string, p UpdateIssueParams) (*Issue, error) {
@@ -94,6 +113,7 @@ func (s *Store) UpdateIssue(id string, p UpdateIssueParams) (*Issue, error) {
 	status := cur.Status
 	assignee := cur.AssigneeAgentID
 	project := cur.ProjectID
+	squad := cur.SquadID
 	if p.Title != nil {
 		title = *p.Title
 	}
@@ -106,7 +126,11 @@ func (s *Store) UpdateIssue(id string, p UpdateIssueParams) (*Issue, error) {
 	if p.ClearAssignee {
 		assignee = sql.NullString{}
 	} else if p.AssigneeAgentID != nil {
-		assignee = sql.NullString{String: *p.AssigneeAgentID, Valid: true}
+		if *p.AssigneeAgentID == "" {
+			assignee = sql.NullString{}
+		} else {
+			assignee = sql.NullString{String: *p.AssigneeAgentID, Valid: true}
+		}
 	}
 	if p.ProjectID != nil {
 		if *p.ProjectID == "" {
@@ -115,10 +139,32 @@ func (s *Store) UpdateIssue(id string, p UpdateIssueParams) (*Issue, error) {
 			project = sql.NullString{String: *p.ProjectID, Valid: true}
 		}
 	}
+	if p.SquadID != nil {
+		if *p.SquadID == "" {
+			squad = sql.NullString{}
+		} else {
+			squad = sql.NullString{String: *p.SquadID, Valid: true}
+		}
+	}
+	// XOR enforcement: setting one side clears the other. This makes
+	// the UI's "switch from agent to squad assignment" gesture
+	// straightforward -- the handler just sends {squad_id: X} and
+	// the agent slot vacates automatically.
+	if assignee.Valid && squad.Valid {
+		if p.SquadID != nil {
+			assignee = sql.NullString{}
+		} else if p.AssigneeAgentID != nil {
+			squad = sql.NullString{}
+		} else {
+			return nil, fmt.Errorf("issue cannot be assigned to both an agent and a squad")
+		}
+	}
 	_, err = s.db.Exec(`
-		UPDATE issue SET title = ?, description = ?, status = ?, assignee_agent_id = ?, project_id = ?, updated_at = datetime('now')
+		UPDATE issue SET title = ?, description = ?, status = ?,
+		                 assignee_agent_id = ?, project_id = ?, squad_id = ?,
+		                 updated_at = datetime('now')
 		WHERE id = ?
-	`, title, desc, status, assignee, project, id)
+	`, title, desc, status, assignee, project, squad, id)
 	if err != nil {
 		return nil, err
 	}
@@ -132,7 +178,9 @@ func (s *Store) DeleteIssue(id string) error {
 
 func scanIssue(sc scanner) (*Issue, error) {
 	var i Issue
-	if err := sc.Scan(&i.ID, &i.Title, &i.Description, &i.Status, &i.AssigneeAgentID, &i.ProjectID, &i.CreatedAt, &i.UpdatedAt); err != nil {
+	if err := sc.Scan(&i.ID, &i.Title, &i.Description, &i.Status,
+		&i.AssigneeAgentID, &i.ProjectID, &i.SquadID,
+		&i.CreatedAt, &i.UpdatedAt); err != nil {
 		return nil, err
 	}
 	if i.AssigneeAgentID.Valid {
@@ -142,6 +190,10 @@ func scanIssue(sc scanner) (*Issue, error) {
 	if i.ProjectID.Valid {
 		v := i.ProjectID.String
 		i.Project = &v
+	}
+	if i.SquadID.Valid {
+		v := i.SquadID.String
+		i.SquadIDStr = &v
 	}
 	return &i, nil
 }

@@ -37,4 +37,10 @@ const (
 	EventCommentCreated = "comment:created"
 	EventCommentUpdated = "comment:updated"
 	EventCommentDeleted = "comment:deleted"
+
+	// Squad events (V0.8). Mirror project events shape -- coarse
+	// invalidation per type, no per-field diffing.
+	EventSquadCreated = "squad:created"
+	EventSquadUpdated = "squad:updated"
+	EventSquadDeleted = "squad:deleted"
 )

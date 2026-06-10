@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { useApi, type Agent, type Issue, type Project, type ProjectInfo, type Task } from "../lib/api";
+import { useApi, type Agent, type Issue, type Project, type ProjectInfo, type SquadWithMembers, type Task } from "../lib/api";
 import { cn, formatRelativeTime } from "../lib/utils";
 import { useWSEvent } from "../lib/ws";
 import { Markdown } from "../lib/markdown";
@@ -32,16 +32,23 @@ export function IssuesPage() {
     queryKey: ["projects"],
     queryFn: () => request<{ projects: Project[] }>("/api/projects"),
   });
+  const squadsQ = useQuery({
+    queryKey: ["squads"],
+    queryFn: () =>
+      request<{ squads: SquadWithMembers[] }>("/api/squads"),
+  });
 
   // Live update on any issue/task event — coarse invalidation is fine for V0.1.
   useWSEvent("issue:", () => qc.invalidateQueries({ queryKey: ["issues"] }));
   useWSEvent("task:", () => qc.invalidateQueries({ queryKey: ["issues"] }));
   useWSEvent("project:", () => qc.invalidateQueries({ queryKey: ["projects"] }));
+  useWSEvent("squad:", () => qc.invalidateQueries({ queryKey: ["squads"] }));
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const issues = issuesQ.data?.issues ?? [];
   const agents = agentsQ.data?.agents ?? [];
   const projects = projectsQ.data?.projects ?? [];
+  const squads = squadsQ.data?.squads ?? [];
   const selected = issues.find((i) => i.id === selectedId) ?? null;
 
   return (
@@ -53,6 +60,7 @@ export function IssuesPage() {
             <CreateIssueButton
               agents={agents}
               projects={projects}
+              squads={squads}
               onCreated={(id) => setSelectedId(id)}
             />
           }
@@ -93,7 +101,7 @@ export function IssuesPage() {
 
       <section className="overflow-auto">
         {selected ? (
-          <IssueDetail issue={selected} agents={agents} projects={projects} />
+          <IssueDetail issue={selected} agents={agents} projects={projects} squads={squads} />
         ) : (
           <div className="grid h-full place-items-center text-sm opacity-50">
             Select an issue.
@@ -134,10 +142,12 @@ function Header({ title, right }: { title: string; right?: React.ReactNode }) {
 function CreateIssueButton({
   agents,
   projects,
+  squads,
   onCreated,
 }: {
   agents: Agent[];
   projects: Project[];
+  squads: SquadWithMembers[];
   onCreated: (id: string) => void;
 }) {
   const { request } = useApi();
@@ -145,7 +155,11 @@ function CreateIssueButton({
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  // V0.8: single agent assignment or squad assignment is mutually
+  // exclusive. The picker is one of two modes selected via radio.
+  const [assigneeMode, setAssigneeMode] = useState<"agent" | "squad" | "none">("none");
   const [assignee, setAssignee] = useState("");
+  const [squadId, setSquadId] = useState("");
   const [projectId, setProjectId] = useState("");
 
   const m = useMutation({
@@ -155,7 +169,9 @@ function CreateIssueButton({
         body: JSON.stringify({
           title,
           description,
-          assignee_agent_id: assignee || undefined,
+          assignee_agent_id:
+            assigneeMode === "agent" && assignee ? assignee : undefined,
+          squad_id: assigneeMode === "squad" && squadId ? squadId : undefined,
           project_id: projectId || undefined,
         }),
       });
@@ -167,6 +183,8 @@ function CreateIssueButton({
       setTitle("");
       setDescription("");
       setAssignee("");
+      setSquadId("");
+      setAssigneeMode("none");
       setProjectId("");
       onCreated(issue.id);
     },
@@ -210,18 +228,68 @@ function CreateIssueButton({
                 </option>
               ))}
             </select>
-            <select
-              value={assignee}
-              onChange={(e) => setAssignee(e.target.value)}
-              className="mb-3 w-full rounded border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-accent/60"
-            >
-              <option value="">— Assign later —</option>
-              {agents.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name}
-                </option>
-              ))}
-            </select>
+
+            {/* V0.8: assignment mode radio. Mutually exclusive --
+                a single agent OR a squad, not both. "Assign later"
+                is the no-op default so users can stage an issue. */}
+            <div className="mb-2 flex items-center gap-3 text-xs">
+              <label className="flex items-center gap-1">
+                <input
+                  type="radio"
+                  name="assignee-mode"
+                  checked={assigneeMode === "none"}
+                  onChange={() => setAssigneeMode("none")}
+                />
+                Assign later
+              </label>
+              <label className="flex items-center gap-1">
+                <input
+                  type="radio"
+                  name="assignee-mode"
+                  checked={assigneeMode === "agent"}
+                  onChange={() => setAssigneeMode("agent")}
+                />
+                Single agent
+              </label>
+              <label className="flex items-center gap-1">
+                <input
+                  type="radio"
+                  name="assignee-mode"
+                  checked={assigneeMode === "squad"}
+                  onChange={() => setAssigneeMode("squad")}
+                />
+                Squad
+              </label>
+            </div>
+            {assigneeMode === "agent" ? (
+              <select
+                value={assignee}
+                onChange={(e) => setAssignee(e.target.value)}
+                className="mb-3 w-full rounded border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-accent/60"
+              >
+                <option value="">— Pick an agent —</option>
+                {agents.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
+                ))}
+              </select>
+            ) : null}
+            {assigneeMode === "squad" ? (
+              <select
+                value={squadId}
+                onChange={(e) => setSquadId(e.target.value)}
+                className="mb-3 w-full rounded border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-accent/60"
+              >
+                <option value="">— Pick a squad —</option>
+                {squads.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    👥 {s.name} ({s.members.length} member{s.members.length === 1 ? "" : "s"})
+                  </option>
+                ))}
+              </select>
+            ) : null}
+
             <div className="flex justify-end gap-2">
               <button
                 onClick={() => setOpen(false)}
@@ -251,10 +319,12 @@ function IssueDetail({
   issue,
   agents,
   projects,
+  squads,
 }: {
   issue: Issue;
   agents: Agent[];
   projects: Project[];
+  squads: SquadWithMembers[];
 }) {
   const { request } = useApi();
   const qc = useQueryClient();
@@ -276,6 +346,10 @@ function IssueDetail({
   const tasks = tasksQ.data?.tasks ?? [];
   const project = issue.project_id
     ? projects.find((p) => p.id === issue.project_id)
+    : null;
+  const squad = issue.squad_id ? squads.find((s) => s.id === issue.squad_id) : null;
+  const squadLeaderName = squad
+    ? agents.find((a) => a.id === squad.leader_agent_id)?.name ?? squad.leader_agent_id.slice(0, 8)
     : null;
 
   // V0.6: peek at project state at the IssueDetail level too. The query
@@ -311,7 +385,19 @@ function IssueDetail({
     mutationFn: (agentId: string) =>
       request<Issue>(`/api/issues/${issue.id}`, {
         method: "PATCH",
+        // Setting an agent assignee implicitly clears the squad (the
+        // store XOR enforcement does this automatically when we send
+        // the agent side).
         body: JSON.stringify({ assignee_agent_id: agentId }),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["issues"] }),
+  });
+
+  const setSquad = useMutation({
+    mutationFn: (sqId: string) =>
+      request<Issue>(`/api/issues/${issue.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ squad_id: sqId }),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["issues"] }),
   });
@@ -355,17 +441,52 @@ function IssueDetail({
           <Markdown className="text-sm opacity-80">{issue.description}</Markdown>
         ) : null}
         <div className="mt-4 flex flex-wrap items-center gap-2">
+          {/* V0.8: combined assignee picker -- a single agent OR a
+              squad. Optgroups make it visible that the two are alternatives.
+              Switching from agent to squad (or vice-versa) clears the other
+              side automatically via the store XOR rule. */}
           <select
-            value={issue.assignee_agent_id ?? ""}
-            onChange={(e) => setAssignee.mutate(e.target.value)}
+            value={
+              issue.squad_id
+                ? `squad:${issue.squad_id}`
+                : issue.assignee_agent_id
+                ? `agent:${issue.assignee_agent_id}`
+                : ""
+            }
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v.startsWith("squad:")) {
+                setSquad.mutate(v.slice("squad:".length));
+              } else if (v.startsWith("agent:")) {
+                setAssignee.mutate(v.slice("agent:".length));
+              } else {
+                // Clear both. The store treats empty squad as clear,
+                // and empty agent path through ClearAssignee.
+                setSquad.mutate("");
+                setAssignee.mutate("");
+              }
+            }}
             className="rounded border border-border bg-bg px-2 py-1 text-xs"
           >
             <option value="">— No assignee —</option>
-            {agents.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.name}
-              </option>
-            ))}
+            {agents.length > 0 ? (
+              <optgroup label="Single agent">
+                {agents.map((a) => (
+                  <option key={a.id} value={`agent:${a.id}`}>
+                    {a.name}
+                  </option>
+                ))}
+              </optgroup>
+            ) : null}
+            {squads.length > 0 ? (
+              <optgroup label="Squad">
+                {squads.map((s) => (
+                  <option key={s.id} value={`squad:${s.id}`}>
+                    👥 {s.name}
+                  </option>
+                ))}
+              </optgroup>
+            ) : null}
           </select>
           <select
             value={issue.project_id ?? ""}
@@ -389,13 +510,34 @@ function IssueDetail({
             </button>
           ) : null}
           <button
-            disabled={!issue.assignee_agent_id || run.isPending}
+            disabled={(!issue.assignee_agent_id && !issue.squad_id) || run.isPending}
             onClick={handleRun}
             className="rounded bg-accent/20 px-3 py-1 text-xs font-medium text-accent hover:bg-accent/30 disabled:opacity-40"
           >
             {run.isPending ? "Enqueuing…" : "Run again"}
           </button>
         </div>
+        {squad ? (
+          <div className="mt-3 space-y-2 rounded border border-warn/30 bg-warn/5 p-2.5 text-[11px]">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="font-semibold uppercase tracking-wide opacity-60">Squad</span>
+              <span className="font-medium">{squad.name}</span>
+              <span className="opacity-40">·</span>
+              <span>
+                👑 Leader: <span className="font-mono">{squadLeaderName}</span>
+              </span>
+              <span className="opacity-40">·</span>
+              <span>
+                {squad.members.length} member{squad.members.length === 1 ? "" : "s"}
+              </span>
+            </div>
+            <div className="opacity-80">
+              The leader gets the first task. To delegate, the leader posts a
+              comment beginning with <code className="font-mono">@&lt;worker-name&gt;</code>{" "}
+              — each mention spawns a worker task you can see nested below.
+            </div>
+          </div>
+        ) : null}
         {project ? (
           <div className="mt-3 space-y-2 rounded border border-border bg-bg/40 p-2.5">
             <ProjectInfoPanel
@@ -414,7 +556,7 @@ function IssueDetail({
       <div className="flex-1 overflow-hidden">
         <IssueThread
           issueId={issue.id}
-          hasAssignee={!!issue.assignee_agent_id}
+          hasAssignee={!!issue.assignee_agent_id || !!issue.squad_id}
           agents={agents}
           renderTaskCard={(t) => {
             // Resume detection: a task is "resumed from a prior run"
@@ -430,7 +572,15 @@ function IssueDetail({
                   other.session_id === t.session_id &&
                   other.created_at < t.created_at,
               );
-            return <TaskRow task={t} isResumed={isResumed} />;
+            // V0.8 task tree indentation: worker tasks get extra
+            // left padding so their nesting under the leader is
+            // visible at a glance, even though the thread itself
+            // is chronological.
+            return (
+              <div className={t.parent_task_id ? "ml-6 border-l-2 border-border pl-2" : ""}>
+                <TaskRow task={t} isResumed={isResumed} />
+              </div>
+            );
           }}
         />
       </div>
@@ -465,6 +615,22 @@ function TaskRow({ task, isResumed }: { task: Task; isResumed: boolean }) {
           </span>
           <StatusBadge status={task.status} />
           <span className="font-mono text-xs opacity-60">{task.id.slice(0, 8)}</span>
+          {task.is_leader_task ? (
+            <span
+              title="Squad leader task -- this agent decides who to delegate to via @mention comments below"
+              className="rounded border border-warn/40 bg-warn/10 px-1.5 py-0.5 text-[9px] font-mono text-warn"
+            >
+              👑 leader
+            </span>
+          ) : null}
+          {task.parent_task_id ? (
+            <span
+              title="Worker task -- spawned by a squad leader's @mention comment"
+              className="rounded border border-border bg-bg/60 px-1.5 py-0.5 text-[9px] opacity-70"
+            >
+              ↳ worker
+            </span>
+          ) : null}
           {isResumed ? (
             <span
               title={`Resumed from prior session ${task.session_id?.slice(0, 8) ?? ""}`}
