@@ -9,6 +9,7 @@ import {
 } from "../lib/api";
 import { formatRelativeTime } from "../lib/utils";
 import { useWSEvent } from "../lib/ws";
+import { MentionAutocompleteTextarea } from "../components/mention-autocomplete";
 
 export function SquadsPage() {
   const { request } = useApi();
@@ -353,9 +354,17 @@ function EditSquadModal({
         <label className="mb-1 block text-[11px] uppercase tracking-wide opacity-50">
           Leader instructions
         </label>
-        <textarea
+        <MentionAutocompleteTextarea
           value={instructions}
-          onChange={(e) => setInstructions(e.target.value)}
+          onChange={setInstructions}
+          // Candidates = the LIVE leader + member-set picks (not the
+          // squad's saved roster), so the user sees what they'll have
+          // after Save, not what they had before.
+          candidates={
+            agents.filter(
+              (a) => a.id === leaderId || memberIds.has(a.id),
+            )
+          }
           rows={4}
           className="mb-3 w-full resize-none rounded border border-border bg-bg px-3 py-2 text-sm font-mono outline-none focus:border-accent/60"
         />
@@ -513,10 +522,20 @@ function NewSquadButton({ agents }: { agents: Agent[] }) {
             <label className="mb-1 block text-[11px] uppercase tracking-wide opacity-50">
               Leader instructions (optional)
             </label>
-            <textarea
+            <MentionAutocompleteTextarea
               placeholder="e.g. 'Always have @reviewer audit before declaring done'"
               value={instructions}
-              onChange={(e) => setInstructions(e.target.value)}
+              onChange={setInstructions}
+              // Candidates = whoever is currently picked. Includes the
+              // leader (the user might write "as @leader, hand off to
+              // @coder when done") plus every selected worker. We
+              // recompute every keystroke so toggling a chip above
+              // updates suggestions instantly.
+              candidates={
+                agents.filter(
+                  (a) => a.id === leaderId || memberIds.has(a.id),
+                )
+              }
               rows={3}
               className="mb-3 w-full resize-none rounded border border-border bg-bg px-3 py-2 text-sm font-mono outline-none focus:border-accent/60"
             />

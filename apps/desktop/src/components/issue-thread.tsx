@@ -11,6 +11,7 @@ import {
 import { Markdown } from "../lib/markdown";
 import { formatRelativeTime, cn } from "../lib/utils";
 import { useWSEvent } from "../lib/ws";
+import { MentionAutocompleteTextarea } from "./mention-autocomplete";
 
 // IssueThread is the V0.7 successor to the V0.6 "Task runs" list.
 // It interleaves comments (member/agent/system) with task cards by
@@ -134,11 +135,9 @@ export function IssueThread({
 // in via the WS event flow.
 //
 // V0.8: when mentionCandidates is non-empty, typing `@<partial>` shows
-// an autocomplete popover so the user discovers the squad's worker
-// names instead of having to remember them. Picking a suggestion
-// inserts the full name in place of the partial. Disambiguation
-// (`@<name>#<short-id>`) is only inserted when two candidates share
-// a case-insensitive name -- otherwise the bare name is enough.
+// an autocomplete popover (via MentionAutocompleteTextarea) so the
+// user discovers the squad's worker names instead of having to
+// remember them.
 function ReplyComposer({
   issueId,
   hasAssignee,
@@ -163,101 +162,6 @@ function ReplyComposer({
     el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
   }, [body]);
 
-  // Mention autocomplete state. `triggerStart` is the index of the
-  // `@` character we matched; `query` is everything between that `@`
-  // and the caret. When triggerStart === null, no popover is open.
-  const [triggerStart, setTriggerStart] = useState<number | null>(null);
-  const [query, setQuery] = useState("");
-  const [highlight, setHighlight] = useState(0);
-
-  // Same separator rule the server's mention parser uses (in Go via
-  // `(?:^|[\s,.;:!?(\[{])`). Re-implemented here so the popover only
-  // pops when typing in a position the server would also treat as a
-  // mention.
-  const isSeparator = (ch: string | undefined) =>
-    ch === undefined || /[\s,.;:!?(\[{]/.test(ch);
-
-  const detectMention = (value: string, caret: number) => {
-    // Walk backwards from caret to find an `@` not preceded by an
-    // alphanumeric (else it's an email-like). Bail on any char that
-    // can't be part of a mention name.
-    for (let i = caret - 1; i >= 0; i--) {
-      const ch = value[i];
-      if (ch === "@") {
-        if (!isSeparator(value[i - 1])) return null;
-        // Disallow newlines in the mention slot.
-        const partial = value.slice(i + 1, caret);
-        if (/\s/.test(partial)) return null;
-        return { start: i, query: partial };
-      }
-      // Allow the same chars the server regex matches in a name token,
-      // plus the `#` disambiguation suffix.
-      if (!/[A-Za-z0-9_.\-#]/.test(ch)) return null;
-    }
-    return null;
-  };
-
-  // Filter candidates. Case-insensitive prefix match. When two share
-  // a name, decide later (at insert time) whether to inject the
-  // `#<shortid>` suffix.
-  const filtered = (() => {
-    if (triggerStart === null) return [] as Agent[];
-    const q = query.toLowerCase();
-    return mentionCandidates
-      .filter((a) => a.name.toLowerCase().includes(q))
-      .slice(0, 6);
-  })();
-
-  const closePopover = () => {
-    setTriggerStart(null);
-    setQuery("");
-    setHighlight(0);
-  };
-
-  const insertMention = (agent: Agent) => {
-    if (triggerStart === null) return;
-    const el = textareaRef.current;
-    if (!el) return;
-    const caret = el.selectionStart ?? body.length;
-    const before = body.slice(0, triggerStart);
-    const after = body.slice(caret);
-    // Disambiguate when another candidate has the same name (case-
-    // insensitive) -- otherwise bare name. Matches the server-side
-    // mention resolution rule so what we insert is what wakes the
-    // intended worker.
-    const sameName = mentionCandidates.filter(
-      (c) => c.name.toLowerCase() === agent.name.toLowerCase(),
-    );
-    const insertion =
-      sameName.length > 1
-        ? `@${agent.name}#${agent.id.slice(0, 8)} `
-        : `@${agent.name} `;
-    const next = before + insertion + after;
-    setBody(next);
-    closePopover();
-    // Restore caret right after the inserted mention. Defer to next
-    // tick so the textarea has the new value before we move the caret.
-    requestAnimationFrame(() => {
-      const pos = before.length + insertion.length;
-      el.setSelectionRange(pos, pos);
-      el.focus();
-    });
-  };
-
-  const onTextareaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const value = e.target.value;
-    setBody(value);
-    const caret = e.target.selectionStart ?? value.length;
-    const m = mentionCandidates.length > 0 ? detectMention(value, caret) : null;
-    if (m) {
-      setTriggerStart(m.start);
-      setQuery(m.query);
-      setHighlight(0);
-    } else if (triggerStart !== null) {
-      closePopover();
-    }
-  };
-
   const m = useMutation({
     mutationFn: () =>
       request<PostCommentResult>(`/api/issues/${issueId}/comments`, {
@@ -266,7 +170,6 @@ function ReplyComposer({
       }),
     onSuccess: () => {
       setBody("");
-      closePopover();
       qc.invalidateQueries({ queryKey: ["issue-comments", issueId] });
       qc.invalidateQueries({ queryKey: ["issue-tasks", issueId] });
     },
@@ -276,84 +179,20 @@ function ReplyComposer({
     ? "Reply to the agent — Cmd/Ctrl+Enter to send (auto-runs the agent)"
     : "Note to self — Cmd/Ctrl+Enter to save (no agent assigned; won't auto-run)";
 
-  const onKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // When the mention popover is open, arrow keys / Enter / Esc
-    // navigate it instead of behaving normally. Cmd/Ctrl+Enter still
-    // submits regardless so the user can finish without picking.
-    if (triggerStart !== null && filtered.length > 0) {
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        setHighlight((i) => Math.min(i + 1, filtered.length - 1));
-        return;
-      }
-      if (e.key === "ArrowUp") {
-        e.preventDefault();
-        setHighlight((i) => Math.max(i - 1, 0));
-        return;
-      }
-      if (e.key === "Enter" && !e.metaKey && !e.ctrlKey) {
-        e.preventDefault();
-        insertMention(filtered[highlight]);
-        return;
-      }
-      if (e.key === "Tab") {
-        e.preventDefault();
-        insertMention(filtered[highlight]);
-        return;
-      }
-      if (e.key === "Escape") {
-        e.preventDefault();
-        closePopover();
-        return;
-      }
-    }
-    if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && body.trim() && !m.isPending) {
-      e.preventDefault();
-      m.mutate();
-    }
-  };
-
   return (
     <div className="border-t border-border bg-panel/60 p-3">
-      <div className="relative">
-        <textarea
-          ref={textareaRef}
-          value={body}
-          onChange={onTextareaChange}
-          onKeyDown={onKey}
-          onBlur={() => {
-            // Delay so clicks on the popover register before it closes.
-            setTimeout(closePopover, 120);
-          }}
-          placeholder={placeholder}
-          rows={2}
-          className="w-full resize-none rounded border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-accent/60"
-        />
-        {triggerStart !== null && filtered.length > 0 ? (
-          <ul
-            className="absolute bottom-full left-2 z-10 mb-1 max-h-48 w-64 overflow-auto rounded border border-border bg-panel shadow-xl"
-            // mousedown (not click) so the textarea's onBlur doesn't
-            // beat us to closing the popover.
-            onMouseDown={(e) => e.preventDefault()}
-          >
-            {filtered.map((a, i) => (
-              <li
-                key={a.id}
-                onMouseEnter={() => setHighlight(i)}
-                onMouseDown={() => insertMention(a)}
-                className={
-                  i === highlight
-                    ? "cursor-pointer bg-accent/15 px-3 py-1.5 text-xs"
-                    : "cursor-pointer px-3 py-1.5 text-xs hover:bg-bg/60"
-                }
-              >
-                <span className="font-mono">@{a.name}</span>
-                <span className="ml-2 opacity-50">{a.id.slice(0, 8)}</span>
-              </li>
-            ))}
-          </ul>
-        ) : null}
-      </div>
+      <MentionAutocompleteTextarea
+        ref={textareaRef}
+        value={body}
+        onChange={setBody}
+        candidates={mentionCandidates}
+        onSubmit={() => {
+          if (!m.isPending) m.mutate();
+        }}
+        placeholder={placeholder}
+        rows={2}
+        className="w-full resize-none rounded border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-accent/60"
+      />
       <div className="mt-2 flex items-center justify-between">
         <div className="text-[10px] opacity-50">
           Markdown supported
