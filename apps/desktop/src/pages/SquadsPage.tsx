@@ -77,6 +77,7 @@ function SquadCard({
     onSuccess: () => qc.invalidateQueries({ queryKey: ["squads"] }),
   });
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [editing, setEditing] = useState(false);
 
   const leaderName =
     agents.find((a) => a.id === squad.leader_agent_id)?.name ??
@@ -91,6 +92,12 @@ function SquadCard({
       <div className="mb-2 flex items-center justify-between">
         <div className="font-medium">{squad.name}</div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => setEditing(true)}
+            className="rounded border border-border px-2 py-0.5 text-[10px] opacity-60 hover:opacity-100"
+          >
+            Edit
+          </button>
           {confirmingDelete ? (
             <>
               <button
@@ -158,7 +165,221 @@ function SquadCard({
       <div className="mt-2 text-[10px] opacity-50">
         Created {formatRelativeTime(squad.created_at)}
       </div>
+      {editing ? (
+        <EditSquadModal
+          squad={squad}
+          agents={agents}
+          onClose={() => setEditing(false)}
+        />
+      ) : null}
     </li>
+  );
+}
+
+// EditSquadModal -- a richer counterpart to NewSquadButton. Lets the
+// user rename, change description, swap leader, edit instructions,
+// and add/remove members. Member mutations go through the dedicated
+// /members endpoints (one add or remove per click) rather than full
+// replace, so the squad row never disappears from existing tasks'
+// view while we recompute.
+//
+// Leader-swap rule: when you pick a new leader, that agent must
+// already be a member -- the backend will add them automatically on
+// PATCH if missing, but we surface the order ("must be in the
+// workers list") so the user understands what just happened.
+function EditSquadModal({
+  squad,
+  agents,
+  onClose,
+}: {
+  squad: SquadWithMembers;
+  agents: Agent[];
+  onClose: () => void;
+}) {
+  const { request } = useApi();
+  const qc = useQueryClient();
+  const [name, setName] = useState(squad.name);
+  const [description, setDescription] = useState(squad.description);
+  const [leaderId, setLeaderId] = useState(squad.leader_agent_id);
+  const [instructions, setInstructions] = useState(squad.instructions);
+
+  // Member set seeded from current roster. Local edits are batched
+  // here; on Save we diff against the original to issue minimal
+  // POST/DELETE /members calls plus one PATCH for the scalar fields.
+  const [memberIds, setMemberIds] = useState<Set<string>>(
+    () => new Set(squad.members.map((m) => m.agent_id)),
+  );
+  const originalMembers = new Set(squad.members.map((m) => m.agent_id));
+
+  const toggleMember = (id: string) => {
+    setMemberIds((cur) => {
+      const next = new Set(cur);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const save = useMutation({
+    mutationFn: async () => {
+      // 1) Patch the scalar fields + leader. Server will INSERT-OR-IGNORE
+      //    the new leader into squad_member automatically, so we don't
+      //    have to pre-add them.
+      await request(`/api/squads/${squad.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          name,
+          description,
+          instructions,
+          leader_agent_id: leaderId,
+        }),
+      });
+      // 2) Member diff. Adds first, then removes -- if the user
+      //    "moves" a leader by swapping leader-pick AND removing them
+      //    from the workers list, doing remove last avoids a transient
+      //    "trying to remove the leader" state.
+      const toAdd = [...memberIds].filter((id) => !originalMembers.has(id));
+      const toRemove = [...originalMembers].filter(
+        (id) => !memberIds.has(id) && id !== leaderId,
+      );
+      for (const id of toAdd) {
+        await request(`/api/squads/${squad.id}/members`, {
+          method: "POST",
+          body: JSON.stringify({ agent_id: id, role: "" }),
+        });
+      }
+      for (const id of toRemove) {
+        await request(`/api/squads/${squad.id}/members/${id}`, {
+          method: "DELETE",
+        });
+      }
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["squads"] });
+      onClose();
+    },
+  });
+
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-bg/70 p-4">
+      <div className="w-full max-w-lg rounded-lg border border-border bg-panel p-4 shadow-xl">
+        <div className="mb-3 flex items-center justify-between">
+          <div className="text-sm font-semibold">Edit squad</div>
+          <button
+            onClick={onClose}
+            className="text-xs opacity-60 hover:opacity-100"
+          >
+            ✕
+          </button>
+        </div>
+        <input
+          autoFocus
+          placeholder="Name"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          className="mb-2 w-full rounded border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-accent/60"
+        />
+        <input
+          placeholder="Description (optional)"
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          className="mb-3 w-full rounded border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-accent/60"
+        />
+
+        <label className="mb-1 block text-[11px] uppercase tracking-wide opacity-50">
+          Leader
+        </label>
+        <select
+          value={leaderId}
+          onChange={(e) => {
+            const id = e.target.value;
+            setLeaderId(id);
+            // When the user switches leader, make sure that agent is
+            // in the members set so the diff at Save time doesn't try
+            // to remove someone we just promoted to leader.
+            if (id) {
+              setMemberIds((cur) => {
+                const next = new Set(cur);
+                next.add(id);
+                return next;
+              });
+            }
+          }}
+          className="mb-3 w-full rounded border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-accent/60"
+        >
+          {agents.map((a) => (
+            <option key={a.id} value={a.id}>
+              👑 {a.name}
+            </option>
+          ))}
+        </select>
+
+        <label className="mb-1 block text-[11px] uppercase tracking-wide opacity-50">
+          Members (click to toggle; leader is locked-in)
+        </label>
+        <div className="mb-3 flex flex-wrap gap-1.5 rounded border border-border bg-bg/40 p-2">
+          {agents.length === 0 ? (
+            <span className="text-[11px] opacity-60">
+              No agents available.
+            </span>
+          ) : (
+            agents.map((a) => {
+              const picked = memberIds.has(a.id);
+              const isLeader = a.id === leaderId;
+              return (
+                <button
+                  key={a.id}
+                  onClick={() => {
+                    if (isLeader) return; // can't toggle the leader
+                    toggleMember(a.id);
+                  }}
+                  disabled={isLeader}
+                  className={
+                    isLeader
+                      ? "cursor-not-allowed rounded border border-warn/40 bg-warn/15 px-2 py-0.5 text-xs text-warn"
+                      : picked
+                      ? "rounded border border-accent/40 bg-accent/15 px-2 py-0.5 text-xs text-accent"
+                      : "rounded border border-border bg-bg/60 px-2 py-0.5 text-xs opacity-70 hover:opacity-100"
+                  }
+                >
+                  {isLeader ? "👑 " : ""}
+                  {a.name}
+                </button>
+              );
+            })
+          )}
+        </div>
+
+        <label className="mb-1 block text-[11px] uppercase tracking-wide opacity-50">
+          Leader instructions
+        </label>
+        <textarea
+          value={instructions}
+          onChange={(e) => setInstructions(e.target.value)}
+          rows={4}
+          className="mb-3 w-full resize-none rounded border border-border bg-bg px-3 py-2 text-sm font-mono outline-none focus:border-accent/60"
+        />
+
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={onClose}
+            className="rounded px-3 py-1.5 text-sm opacity-70 hover:opacity-100"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => save.mutate()}
+            disabled={!name || !leaderId || save.isPending}
+            className="rounded bg-accent/20 px-3 py-1.5 text-sm font-medium text-accent hover:bg-accent/30 disabled:opacity-40"
+          >
+            {save.isPending ? "Saving…" : "Save"}
+          </button>
+        </div>
+        {save.error ? (
+          <div className="mt-2 text-xs text-danger">{(save.error as any).message}</div>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
