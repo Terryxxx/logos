@@ -81,23 +81,28 @@ $env:LOGOS_SIDECAR="off"  # PowerShell
 pnpm tauri:dev
 ```
 
-## V0.1 scope
+## V0.x scope (shipped so far)
 
-- Single user (no auth UI, localhost token only)
-- Issue CRUD + assign-to-agent
-- Agent CRUD bound to a local runtime
-- Auto-detect Claude Code on PATH at server startup
-- Task state machine: queued → dispatched → running → completed/failed/cancelled
-- Live progress over WebSocket
-- SQLite persistence at OS-standard data dir
+| Version | What landed |
+|---|---|
+| **V0.7** | **Comments + multi-turn dialog.** Issues become threads; posting a comment on an assigned issue auto-enqueues a task whose prompt is the comment body. Agent's final result echoes back as an agent-authored comment. Replaces "Run again" as the primary followup mechanism. |
+| **V0.6** | **Project-aware UX.** Git branch + dirty count, instruction-file detection (`AGENTS.md` / `CLAUDE.md` / `.claude/skills/`), per-task diff stat chip (`+12 −3 · 4 files`), dirty-repo confirm guard before run. |
+| **V0.5** | **Projects.** Bind issues to real on-disk paths. Agents read and modify your actual repository files. |
+| **V0.4** | **Per-issue workspaces + session resume.** `--resume` chain across "Run again". Tool-call UI fix for Copilot CLI's `tool.execution_start` events. |
+| **V0.3** | **Tauri sidecar integration.** `pnpm tauri:dev` one-command launch. |
+| **V0.2** | **Streaming message UI.** TaskConversation component, Markdown rendering, tool-call folding. |
+| **V0.1** | Single-user skeleton: Issue CRUD, agent-runtime auto-detection, task state machine, WebSocket live progress, SQLite persistence at OS-standard data dir. Two providers: Claude Code + GitHub Copilot CLI. |
+
+See [`docs/ROADMAP.md`](docs/ROADMAP.md) for "what's next" (V0.8 Squad — first multi-agent mode).
 
 ## Documentation
 
 | Doc | Purpose |
 |---|---|
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Full architecture: process model, data model, task lifecycle, module deps, invariants |
+| [`AGENTS.md`](AGENTS.md) | Auto-loaded by every agent CLI working in this repo: workflow rules (never push without approval), architecture invariants, code style, and the pre-handover testing checklist template. |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Full architecture: process model, data model, task lifecycle, comment thread flow, module deps, invariants |
 | [`docs/DECISIONS.md`](docs/DECISIONS.md) | ADR-style record of every non-obvious choice (Tauri over Electron, Go over Rust, SQLite over Postgres, …) |
-| [`docs/ROADMAP.md`](docs/ROADMAP.md) | V0.1 done list + V0.2 → V0.6 planning + known TODOs |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Shipped V0.1 → V0.7 + planned V0.8 → V2.0 with Multica-derived implementation notes |
 | [`docs/MULTICA_ANALYSIS.md`](docs/MULTICA_ANALYSIS.md) | Reverse-engineered analysis of [multica-ai/multica](https://github.com/multica-ai/multica), our reference implementation |
 
 ## Troubleshooting

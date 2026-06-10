@@ -75,54 +75,101 @@ processes** on the user's machine:
 | `~/Library/Logs/Logos/server.log` | (V0.2) server stderr captured by Tauri sidecar. |
 | `<repo>/server/migrations/*.sql` | Bundled into the binary via `//go:embed`. |
 
-## 4. Data model (V0.1)
+## 4. Data model (current — V0.7)
 
-Seven tables; full SQL in `server/migrations/001_init.sql`.
+Tables grow with each milestone; full SQL across `server/migrations/*.sql`.
 
 ```
                       ┌──────────────────┐
                       │  agent_runtime   │  one row per detected CLI
-                      │  (provider UQ)   │  (claude, codex, …)
+                      │  (provider UQ)   │  (claude, copilot, …)
                       └────────┬─────────┘
                                │ 1
                                │
                                │ N
-                      ┌────────▼─────────┐
-                      │      agent       │  user-configured persona
-                      │  + instructions  │  (one runtime backs many agents)
-                      │  + max_concurrent│
-                      └────────┬─────────┘
-                               │ 1
-                               │ N
-   ┌──────────────────┐        │        ┌──────────────────┐
-   │     issue        │────────┴────────│ agent_task_queue │
-   │ (assignee_agent) │       1:N        │   (the heart)   │
-   └──────────────────┘                  └────────┬─────────┘
-                                                  │ 1:N
-                                                  ▼
-                                         ┌──────────────────┐
-                                         │   task_message   │  streamed
-                                         │  (seq, kind,     │  agent output
-                                         │   payload JSON)  │
-                                         └──────────────────┘
+                      ┌────────▼─────────┐         ┌──────────────────┐
+                      │      agent       │         │     project      │  V0.5
+                      │  + instructions  │         │  + local_path    │
+                      │  + max_concurrent│         │  + description   │
+                      └────────┬─────────┘         └────────┬─────────┘
+                               │ 1                          │ 0..1
+                               │                            │
+                               │ N                          │ N
+   ┌──────────────────┐        │                            │
+   │     issue        │────────┴────────────────────────────┘
+   │ (assignee_agent) │
+   │  (project_id)    │ V0.5
+   └────┬──────┬──────┘
+        │ 1    │ 1
+        │      │ N (V0.7)
+        │      ▼
+        │   ┌──────────────────┐
+        │   │     comment      │  V0.7 — issue thread
+        │   │  + author_type   │  ('member'|'agent'|'system')
+        │   │  + parent_id     │  self-ref for threading
+        │   │  + resolved_at   │
+        │   └──────────────────┘
+        │ N
+        ▼
+   ┌──────────────────┐
+   │ agent_task_queue │  THE HEART
+   │ + status         │
+   │ + session_id     │
+   │ + work_dir       │
+   │ + pre_ref        │  V0.6
+   │ + post_ref       │  V0.6
+   │ + diff_*         │  V0.6 (additions / deletions / changed_files)
+   │ + trigger_comment_id │  V0.7 (which comment woke this task)
+   └────────┬─────────┘
+            │ 1:N
+            ▼
+   ┌──────────────────┐
+   │   task_message   │  streamed agent output
+   │  (seq, kind,     │
+   │   payload JSON)  │
+   └──────────────────┘
 
-      ┌─────────────────┐
-      │  app_settings   │  K/V — holds the localhost token, future prefs
-      └─────────────────┘
+   ┌─────────────────┐
+   │  app_settings   │  K/V — holds the localhost token, future prefs
+   └─────────────────┘
 
-      ┌─────────────────┐
-      │ schema_version  │  migration bookkeeping
-      └─────────────────┘
+   ┌─────────────────┐
+   │ schema_version  │  migration bookkeeping
+   └─────────────────┘
 ```
 
-Key invariants enforced at the schema level:
+### Schema invariants (enforced at the SQL layer)
 
-- `agent_runtime.provider` is **unique** — V0.1 picks one binary per provider.
+- `agent_runtime.provider` is **unique** — one binary per provider.
 - `agent_task_queue.status` is a **CHECK constraint** over 6 values:
   `queued | dispatched | running | completed | failed | cancelled`.
-- `task_message(task_id, seq)` is **unique** — preserves ordering even if the
-  runner retries an append.
-- All foreign keys are `ON DELETE CASCADE` (issue gone → tasks + messages gone).
+- `task_message(task_id, seq)` is **unique** — preserves ordering even
+  if the runner retries an append.
+- All foreign keys are `ON DELETE CASCADE` (issue gone → tasks +
+  messages + comments gone; comment gone → reply subtree gone).
+- `comment.author_type` is a **CHECK** over
+  `'member' | 'agent' | 'system'`.
+
+### V0.6 columns -- per-task diff capture
+
+`task.{pre_ref, post_ref, diff_additions, diff_deletions, diff_changed_files}`
+are all nullable. NULL means "not captured" (sandbox-mode task, or
+project isn't a git repo); a number means "captured -- could be 0".
+UI must distinguish those: `diff_changed_files === null` hides the chip,
+`=== 0` shows "no file changes".
+
+Column shape mirrors Multica's `github_pull_request.{additions,
+deletions, changed_files}` so a future V1.x GitHub-integration
+milestone can fill the same columns from a webhook payload without
+a migration.
+
+### V0.7 columns -- comment-driven task trigger
+
+`agent_task_queue.trigger_comment_id` is NULL for tasks created via
+the "Run again" button or initial issue-assign. When set, the runner
+uses the comment's body as the prompt instead of issue title+description.
+Each comment can trigger at most one task (1:0..1 relation, enforced
+by app code -- the schema only requires the FK).
 
 ## 5. Task lifecycle (the state machine)
 
@@ -174,6 +221,66 @@ Where each transition is implemented:
    deterministic host across machines), so the webview origin is
    `http://127.0.0.1:1420` — easy to miss when adding new ports later.
 
+## 5b. Comment-driven multi-turn (V0.7)
+
+Comments replace "Run again" as the primary followup mechanism. The
+flow when a user posts a comment:
+
+```
+   IssueDetail UI                  CommentService              TaskService
+        │                                │                          │
+        │ POST /api/issues/:id/comments  │                          │
+        │ {body: "now sort by size"}     │                          │
+        ├───────────────────────────────►│                          │
+        │                                │ CreateComment            │
+        │                                │ (author='member')        │
+        │                                │                          │
+        │                                │ Publish(comment:created) │
+        │                                │                          │
+        │                                │ EnqueueFromComment       │
+        │                                │  (issueID, commentID)    │
+        │                                ├─────────────────────────►│
+        │                                │                          │ CreateTaskWithTrigger
+        │                                │                          │ Publish(task:queued)
+        │                                │                          │ signalWakeup
+        │ ◄──────────────────────────────┴──────────────────────────┤ returns task
+        │ {comment, task}                                           │
+        │                                                           │
+        │ ◄─── WS task:queued ─── WS comment:created ───────────────┤
+        │
+        │   (Runner picks up the task on next tick. Reads
+        │   task.trigger_comment_id, fetches the comment, uses
+        │   its body as the prompt instead of issue title+desc.
+        │   When the agent finishes, runner calls
+        │   CommentService.PostAgent(result) so the agent's
+        │   reply appears in the thread as an agent-authored
+        │   comment.)
+```
+
+### Why a separate `CommentService`?
+
+Comment creation has BOTH a store effect (insert row + WS event) AND a
+queue effect (enqueue a triggered task). Pushing the queue logic
+through `TaskService` would leak the comment shape into a layer that
+knows nothing about it. The dependency direction is one-way:
+`CommentService → TaskService`, never the reverse.
+
+### Author types
+
+| Type | Set by | Body source | Edit/Delete in UI |
+|---|---|---|---|
+| `member` | UI Reply composer | User typed | Yes (own comments) |
+| `agent` | Runner on task completion | `result.Output` | No |
+| `system` | Reserved for V0.8 squad handoffs | Programmatic | No |
+
+**Why we DON'T auto-post system comments on task lifecycle** (queued /
+running / completed): task cards already render in the thread
+interleaved by `created_at`. A "queued / running / completed"
+system-comment stream on top of that would triple the noise without
+adding info. System comments are reserved for V0.8 squad delegations
+("leader X delegated to worker Y") where no equivalent task card
+exists -- those are real events that need a thread entry.
+
 ## 6. Module dependency graph (Go)
 
 ```
@@ -183,10 +290,13 @@ cmd/logos-server ──┬──► config
                    ├──► events
                    ├──► realtime ────────► pkg/protocol
                    ├──► agent  ───────────► store
+                   ├──► projectinfo  ──── (V0.6, stdlib only — shells out to git)
                    ├──► service ─┬──► store
                    │             ├──► events
                    │             ├──► agent
+                   │             ├──► projectinfo (V0.6)
                    │             └──► pkg/protocol
+                   │   (CommentService → TaskService inside this layer; V0.7)
                    └──► handler ─┬──► store
                                  ├──► service
                                  ├──► events

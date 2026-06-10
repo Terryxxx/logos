@@ -651,6 +651,148 @@ not a replacement for them.
 
 ---
 
+## ADR-021 · Local-only git probe for project-aware UX (over GitHub PR webhooks)
+
+**Context.** V0.6 needed three project-mode affordances:
+
+1. Branch + dirty count surfaced in IssueDetail so users see what
+   state the agent will encounter before they kick off a run.
+2. Detection of instruction files (`AGENTS.md`, `CLAUDE.md`,
+   `.claude/skills/`, `.agents/skills/`) so users know which rules
+   the agent will auto-load.
+3. Post-run diff stat chip (`+12 −3 · 4 files`) on each task card.
+
+Multica solves the diff-stat case differently: their workspace is a
+runtime sandbox (VHD / container), not the user's checkout, so they
+get all diff numbers from the **GitHub pull-request webhook**
+(`github_pull_request.additions / deletions / changed_files`,
+migration `092_pr_stats.up.sql`). Their card hides the row when
+`total === 0` to avoid showing "+0 −0" before the webhook has caught up.
+
+Logos has no GitHub integration in V0.x and no plans to require one
+before V1.x.
+
+**Decision.** A new `server/internal/projectinfo` package shells out
+to the user's `git` binary for every probe (status, log, diff,
+HEAD-capture). 4-second timeout per call. The schema for diff stats
+(`task.{pre_ref, post_ref, diff_additions, diff_deletions,
+diff_changed_files}`) deliberately mirrors Multica's column names so
+a future V1.x GitHub-integration milestone can fill the same columns
+from a webhook payload without a schema migration.
+
+**Why.**
+
+- **Zero binary-size cost.** No Go git library, no CGO, no extra
+  build step.
+- **Matches the user's existing `.gitconfig`.** Credential helpers,
+  `includeIf`, custom aliases — all just work because we're invoking
+  the user's git.
+- **Read-only operations only.** `git status / log / diff` are
+  textually stable across versions (porcelain v1 guarantee).
+- **Gracefully degrades.** When the project isn't a git repo, every
+  probe returns a zero-value result and the UI hides the affected
+  chip. No error popup; the rest of the UX still works.
+- **Schema-compatible with Multica.** When we eventually want GitHub
+  PR integration, the diff columns are already named correctly.
+
+**Trade-offs accepted.**
+
+- A spawn-per-probe overhead (~10ms each on Windows). Acceptable
+  because they fire on user interaction, not in a hot loop. If we
+  ever do automatic refresh on every keystroke, batch into a
+  go-git library call instead.
+- `git` must be on `PATH`. Same precondition as every other
+  developer tool we shell out to. Documented in `README.md`
+  prerequisites.
+- Diff stat captures BOTH committed changes (since `pre_ref`) AND
+  uncommitted working-tree changes AND untracked files. That's
+  more inclusive than GitHub's PR diff (which only shows commits).
+  Considered a feature: shows the user "everything the agent did",
+  not "everything the agent committed".
+
+**Revisit trigger.** Two scenarios. (1) When per-keystroke probing
+becomes a feature (e.g. live preview of how changing a file would
+affect the diff badge), batch into go-git. (2) When V1.x adds
+GitHub integration, fill the same diff columns from the webhook
+event — the UI keeps reading them the same way.
+
+---
+
+## ADR-022 · Comments as the multi-turn mechanism (over a separate Chat panel)
+
+**Context.** V0.7 had to provide a way to follow up with an agent
+beyond "Run again". Three shapes were considered:
+
+1. **Chat panel** alongside the task list. Separate UI tab, like
+   Cursor's chat. Tasks and chat live in different worlds.
+2. **Comments thread** that interleaves with task cards. One UI
+   surface; tasks and comments share a chronology.
+3. **Inline task editing**: let the user edit a previous task's
+   prompt and "re-run". No new persistence; just rewinds.
+
+Multica chose option 2 and built it heavily — migrations 017 (parent
+threading), 028 (task-trigger-comment join), 069 (resolved_at), 107
+(system author type), plus a comment_reactions table, an FTS5 search
+index, and a subscriber model. The thread is the entire interaction
+surface in their UI.
+
+**Decision.** Adopt option 2 (comments). One `comment` table whose
+schema collapses Multica's `001 + 017 + 018 + 069 + 107` migrations
+into a single file. The IssueDetail page renders comments and task
+cards interleaved by `created_at`. A member comment on an assigned
+issue auto-enqueues a task whose prompt is the comment body
+(linked via `agent_task_queue.trigger_comment_id`). The runner posts
+the agent's final output as an agent-authored comment so the reply
+appears inline.
+
+**Why.**
+
+- **One mental model.** Reading the thread top-to-bottom gives the
+  user a complete chronological view of "what we discussed and what
+  the agent did". A separate chat panel + task list forces two
+  parallel reads.
+- **Reuses V0.4 session resume.** The comment body becomes a prompt;
+  the runner already passes `--resume <session_id>` so the agent
+  remembers the prior conversation. No new state.
+- **V0.8 free.** Squad delegation is "a leader posts a comment that
+  mentions `@worker`". Same trigger mechanism, just different
+  parser. Without the comment infrastructure, V0.8 would need its
+  own message bus.
+- **System-author column is cheap to add now, expensive later.**
+  V0.7 doesn't need it for the user-facing flow, but V0.8's squad
+  handoffs do. Adding the column once now keeps V0.8 schema-pure.
+
+**Trade-offs accepted.**
+
+- **No system comments on task lifecycle.** We deliberately do NOT
+  auto-fire system comments on queued/running/completed. The task
+  cards already render in the thread interleaved by `created_at`;
+  duplicating that as "Logos: task queued / Logos: task running /
+  Logos: task completed" would triple the noise without adding info.
+  System comments stay reserved for V0.8 squad delegations where no
+  equivalent task card exists.
+- **Comment-triggers-task is a coupling.** `CommentService` depends
+  on `TaskService.EnqueueFromComment`. Accepted because the
+  dependency is one-way (CommentService → TaskService, never
+  reverse) and the alternative (event-bus subscriber that translates
+  comment:created → enqueue) adds latency for no benefit at single-
+  user scale.
+- **Edit/delete of own comments only.** No author guards in V0.7
+  (single user). When V2 multi-user lands, the handler will need
+  author-equality checks. Until then, "me" can edit "me".
+- **Deliberately skipped Multica features:** reactions (`026`),
+  full-text search (`033`), comment.workspace_id (`025`). Each is
+  a paragraph of code we can add later when the user actually wants
+  it; absent now to keep the V0.7 surface small.
+
+**Revisit trigger.** When V0.8 squad ships and `@`-mentions wake
+workers, validate that the trigger-comment path scales to >1 task
+per comment (today it's strict 1:1). If V1.1 generalises mentions
+across non-squad agents, the same path needs to support multiple
+mentioned-agent triggers from a single comment.
+
+---
+
 ## How to add a new ADR
 
 1. Pick the next number (`ADR-XXX`).
