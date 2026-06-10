@@ -152,6 +152,17 @@ user doesn't have to repeat the correction:
   Logos actually supports right now (read/write files via Claude
   Code or Copilot CLI). Don't reference unshipped features like
   squad delegation, @mentions, autopilots, skills.
+- **List EVERY prerequisite up-front. Do not write "if you don't
+  have X, go set it up" without telling the user the exact clicks
+  to set up X.** If the test needs 2 agents named `leader` and
+  `coder`, write the explicit Agents-tab steps in the prereq
+  section. The user should be able to walk through the test
+  without ever asking "wait, how do I…?".
+- **Single-token names for anything the agent will reference.**
+  Squad mention parsing uses `[A-Za-z0-9_.-]+` (no spaces). If a
+  test relies on `@coder` matching, the agent must be named
+  `coder`, NOT `Backend Engineer`. Tell the user this in the
+  prereq when relevant.
 
 ### Test layout template
 
