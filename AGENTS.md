@@ -111,3 +111,83 @@ to `docs/DECISIONS.md` first.
 about a feature shape (comments, squads, autopilots, skills), check
 how Multica solved it first — they shipped to real users and the
 edge cases they hit are documented in migrations 001-110+.
+
+---
+
+## Pre-handover testing checklist
+
+When the agent finishes a milestone and asks the user to verify, also
+print a numbered checklist of click-throughs the user can follow to
+exercise every Must item. Keep it tight (10-15 steps max), name the
+exact UI surfaces to click, and include the expected observation
+after each step so the user can self-judge pass/fail without asking
+back.
+
+### Always-run smoke (every milestone)
+
+1. **Migrations clean.** Close Logos, delete
+   `%APPDATA%\Logos\logos.db` (or skip if you want to preserve
+   data; existing rows survive the next launch). Start
+   `pnpm tauri:dev`. The console should show no SQL errors and the
+   app should reach the Issues tab.
+2. **Sidecar healthy.** Switch to the Runtimes tab. At least one
+   provider should be `online` (Claude Code or Copilot CLI).
+3. **No console errors.** Open DevTools (Ctrl+Shift+I in Tauri
+   dev mode). No red errors, no failed network requests on Issues
+   tab load.
+
+### V0.7 specific (current milestone)
+
+Verifies comments + auto-task triggering + agent reply.
+
+4. **Empty thread renders.** Create a new issue with no assignee.
+   IssueDetail's lower half shows "Thread" header, empty state
+   message ("Assign an agent above, then post a comment"), and the
+   Reply composer at the bottom.
+5. **Note-only comment.** Type "remember to test edge case X" in
+   the composer. Button reads **"Send"** (no "+run" suffix). Click
+   it. Comment appears with accent-blue border + "You" label. No
+   task card appears. Refresh the page; the comment is still there.
+6. **Edit + edited marker.** Hover the member comment, click Edit.
+   Change the body, click Save. Comment updates inline; the meta
+   row now reads "... · edited".
+7. **Delete + cascade.** Hover the member comment, click Delete →
+   Confirm. The row vanishes. If it had any replies they vanish too.
+8. **Assign + auto-trigger.** Pick an agent from the assignee
+   dropdown at the top. The composer button label flips to
+   **"Send + run"**. Type "list the top-level files in my home
+   directory" and Cmd/Ctrl+Enter. Within ~1 second you should see:
+   - the comment row appear above
+   - a fresh task card appear below with `queued` then `running`
+     status, and a small `↳ reply` chip
+9. **Agent reply as comment.** When the task completes, a new
+   green-bordered comment appears in the thread with the agent's
+   final output (Markdown-rendered). The corresponding task card
+   shows `completed` status.
+10. **Multi-turn followup.** Post another comment ("now sort them
+    by size"). A NEW task card appears, again with `↳ reply`. The
+    agent should pick up the prior session — task card should show
+    the `↻ resumed` chip.
+11. **Project-mode + dirty guard (V0.6 regression).** Create or
+    open an issue bound to a project that has uncommitted git
+    changes. Send a comment. The dirty-repo confirm dialog should
+    fire BEFORE the task enqueues.
+12. **Diff stat (V0.6 regression).** When the agent finishes a
+    project-mode task that touched files, the task card header
+    shows `+X -Y · N file(s)`.
+13. **WS live updates.** Leave the issue page open. From another
+    process (or another instance), POST to
+    `/api/issues/:id/comments` (curl with the runtime token from
+    `%APPDATA%\Logos\runtime.json`). The new comment should pop
+    into the thread without a refresh.
+14. **System comments do not auto-spam.** Confirm no system
+    comments appear automatically on queued/running/completed
+    transitions. Task cards themselves are the chronology markers.
+    (System comments are reserved for V0.8 squad handoffs.)
+
+### Pass / fail recording
+
+If anything fails: file an issue (mentally or as a comment on the
+issue you were testing), name the step number, and the expected vs
+actual. The agent that worked on the milestone is responsible for
+fixing it before claiming "done".
